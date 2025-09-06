@@ -15,7 +15,7 @@
                 </a>
             </li>
 
-            <li class="pc-item pc-caption">
+            <!-- <li class="pc-item pc-caption">
                 <label>UI Components</label>
                 <i class="ti ti-dashboard"></i>
             </li>
@@ -53,6 +53,48 @@
                 <span class="pc-micon"><i class="ti ti-user-plus"></i></span>
                 <span class="pc-mtext">Register</span>
                 </a>
+            </li> -->
+
+            <li class="pc-item pc-caption">
+                <label>Captación</label>
+                <i class="ti ti-brand-chrome"></i>
+            </li>
+            <li class="pc-item pc-hasmenu">
+                <a href="#!" class="pc-link"><span class="pc-micon"><i class="ti ti-eye"></i></span><span class="pc-mtext">Seguimiento</span><span class="pc-arrow"><i data-feather="chevron-right"></i></span></a>
+                <ul class="pc-submenu">
+                <li class="pc-item"><a class="pc-link" href="leads.php">Registro de Leads</a></li>
+                <li class="pc-item"><a class="pc-link" href="clasificacion_leads.php">Clasificación de Leads</a></li>
+                <li class="pc-item"><a class="pc-link" href="asignacion_leads.php">Asignación</a></li>
+                <li class="pc-item"><a class="pc-link" href="agenda_leads.php">Agenda</a></li>
+                </ul>
+            </li>
+
+            <li class="pc-item pc-caption">
+                <label>Comunicación Institucional</label>
+                <i class="ti ti-brand-chrome"></i>
+            </li>
+            <li class="pc-item pc-hasmenu">
+                <a href="#!" class="pc-link"><span class="pc-micon"><i class="ti ti-message"></i>
+                    </span><span class="pc-mtext">Comunicación</span><span class="pc-arrow"><i data-feather="chevron-right"></i></span></a>
+                <ul class="pc-submenu">
+                <li class="pc-item"><a class="pc-link" href="gestion_envios.php">Gestión de Envíos</a></li>
+                <li class="pc-item"><a class="pc-link" href="mensajeria.php">Mensajería Programada</a></li>
+                <li class="pc-item"><a class="pc-link" href="comunicaciones.php">Registro de Comunicaciones</a></li>
+                </ul>
+            </li>
+
+            <li class="pc-item pc-caption">
+                <label>Padres y Apoderados</label>
+                <i class="ti ti-brand-chrome"></i>
+            </li>
+            <li class="pc-item pc-hasmenu">
+                <a href="#!" class="pc-link"><span class="pc-micon"><i class="fas fa-users"></i>
+                    </span><span class="pc-mtext">Gestión de Apoderaos</span><span class="pc-arrow"><i data-feather="chevron-right"></i></span></a>
+                <ul class="pc-submenu">
+                <li class="pc-item"><a class="pc-link" href="apoderados.php">Registro de Apoderados</a></li>
+                <li class="pc-item"><a class="pc-link" href="historial_interacciones.php">Historial de Interacciones</a></li>
+                <li class="pc-item"><a class="pc-link" href="clasi_seg.php">Clasificación y Segmentación</a></li>
+                </ul>
             </li>
 
             <li class="pc-item pc-caption">
