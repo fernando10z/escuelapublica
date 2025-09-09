@@ -2,129 +2,94 @@
 // Incluir conexión a la base de datos
 include 'bd/conexion.php';
 
-// Procesar filtros si existen
-$where_conditions = ["1=1"];
-$fecha_inicio = $_GET['fecha_inicio'] ?? '';
-$fecha_fin = $_GET['fecha_fin'] ?? '';
-$tipo_mensaje = $_GET['tipo_mensaje'] ?? '';
-$estado_mensaje = $_GET['estado_mensaje'] ?? '';
-$contacto_filtro = $_GET['contacto_filtro'] ?? '';
-
-if (!empty($fecha_inicio)) {
-    $where_conditions[] = "DATE(me.created_at) >= '" . $conn->real_escape_string($fecha_inicio) . "'";
-}
-if (!empty($fecha_fin)) {
-    $where_conditions[] = "DATE(me.created_at) <= '" . $conn->real_escape_string($fecha_fin) . "'";
-}
-if (!empty($tipo_mensaje)) {
-    $where_conditions[] = "me.tipo = '" . $conn->real_escape_string($tipo_mensaje) . "'";
-}
-if (!empty($estado_mensaje)) {
-    $where_conditions[] = "me.estado = '" . $conn->real_escape_string($estado_mensaje) . "'";
-}
-if (!empty($contacto_filtro)) {
-    $where_conditions[] = "(me.destinatario_email LIKE '%" . $conn->real_escape_string($contacto_filtro) . "%' 
-                           OR me.destinatario_telefono LIKE '%" . $conn->real_escape_string($contacto_filtro) . "%'
-                           OR CONCAT(l.nombres_estudiante, ' ', l.apellidos_estudiante) LIKE '%" . $conn->real_escape_string($contacto_filtro) . "%'
-                           OR CONCAT(a.nombres, ' ', a.apellidos) LIKE '%" . $conn->real_escape_string($contacto_filtro) . "%')";
-}
-
-$where_clause = implode(' AND ', $where_conditions);
-
-// Consulta para obtener el historial de comunicaciones con información de tablas relacionadas
+// Consulta para obtener los apoderados con información de tablas relacionadas
 $sql = "SELECT 
-    me.id,
-    me.tipo,
-    me.plantilla_id,
-    pm.nombre as plantilla_nombre,
-    pm.categoria as plantilla_categoria,
-    me.lead_id,
-    CONCAT(l.nombres_estudiante, ' ', l.apellidos_estudiante) as lead_nombre,
-    CONCAT(l.nombres_contacto, ' ', l.apellidos_contacto) as lead_contacto,
-    me.apoderado_id,
-    CONCAT(a.nombres, ' ', a.apellidos) as apoderado_nombre,
+    a.id,
+    a.familia_id,
+    f.codigo_familia,
     f.apellido_principal as familia_apellido,
-    me.destinatario_email,
-    me.destinatario_telefono,
-    me.asunto,
-    LEFT(me.contenido, 200) as contenido_preview,
-    me.estado,
-    me.fecha_envio,
-    me.fecha_entrega,
-    me.fecha_lectura,
-    me.proveedor_id,
-    me.mensaje_id_externo,
-    me.costo,
-    me.error_mensaje,
-    me.created_at,
+    f.direccion as familia_direccion,
+    f.distrito,
+    f.nivel_socioeconomico,
+    a.tipo_apoderado,
+    a.tipo_documento,
+    a.numero_documento,
+    a.nombres,
+    a.apellidos,
+    a.fecha_nacimiento,
+    a.genero,
+    a.email,
+    a.telefono_principal,
+    a.telefono_secundario,
+    a.whatsapp,
+    a.ocupacion,
+    a.empresa,
+    a.nivel_educativo,
+    a.estado_civil,
+    a.nivel_compromiso,
+    a.nivel_participacion,
+    a.preferencia_contacto,
+    a.activo,
+    a.created_at,
+    a.updated_at,
+    CONCAT(a.nombres, ' ', a.apellidos) as nombre_completo,
+    -- Contar estudiantes asociados
+    COUNT(e.id) as total_estudiantes,
+    GROUP_CONCAT(CONCAT(e.nombres, ' ', e.apellidos) SEPARATOR ', ') as estudiantes_nombres,
+    -- Calcular edad
+    YEAR(CURDATE()) - YEAR(a.fecha_nacimiento) - 
+    (DATE_FORMAT(CURDATE(), '%m%d') < DATE_FORMAT(a.fecha_nacimiento, '%m%d')) as edad,
+    -- Información adicional
     CASE 
-        WHEN me.lead_id IS NOT NULL THEN 'Lead'
-        WHEN me.apoderado_id IS NOT NULL THEN 'Apoderado'
-        ELSE 'Directo'
-    END as tipo_destinatario,
-    CASE 
-        WHEN me.lead_id IS NOT NULL THEN CONCAT(l.nombres_estudiante, ' ', l.apellidos_estudiante, ' (', l.nombres_contacto, ' ', l.apellidos_contacto, ')')
-        WHEN me.apoderado_id IS NOT NULL THEN CONCAT(a.nombres, ' ', a.apellidos, ' - Fam. ', f.apellido_principal)
-        ELSE COALESCE(me.destinatario_email, me.destinatario_telefono)
-    END as destinatario_completo,
-    -- Calcular tiempo de entrega
-    CASE 
-        WHEN me.fecha_entrega IS NOT NULL AND me.fecha_envio IS NOT NULL 
-        THEN TIMESTAMPDIFF(MINUTE, me.fecha_envio, me.fecha_entrega)
-        ELSE NULL
-    END as tiempo_entrega_minutos,
-    -- Calcular tiempo hasta lectura
-    CASE 
-        WHEN me.fecha_lectura IS NOT NULL AND me.fecha_envio IS NOT NULL 
-        THEN TIMESTAMPDIFF(MINUTE, me.fecha_envio, me.fecha_lectura)
-        ELSE NULL
-    END as tiempo_lectura_minutos
-FROM mensajes_enviados me
-LEFT JOIN plantillas_mensajes pm ON me.plantilla_id = pm.id
-LEFT JOIN leads l ON me.lead_id = l.id
-LEFT JOIN apoderados a ON me.apoderado_id = a.id
+        WHEN a.nivel_compromiso = 'alto' AND a.nivel_participacion IN ('muy_activo', 'activo') THEN 'excelente'
+        WHEN a.nivel_compromiso = 'medio' AND a.nivel_participacion IN ('activo', 'poco_activo') THEN 'buena'
+        ELSE 'regular'
+    END as calificacion_participacion
+FROM apoderados a
 LEFT JOIN familias f ON a.familia_id = f.id
-WHERE $where_clause
-ORDER BY me.created_at DESC";
+LEFT JOIN estudiantes e ON a.familia_id = e.familia_id
+WHERE a.activo = 1
+GROUP BY a.id, a.familia_id, f.codigo_familia, f.apellido_principal, f.direccion, f.distrito, f.nivel_socioeconomico,
+         a.tipo_apoderado, a.tipo_documento, a.numero_documento, a.nombres, a.apellidos, a.fecha_nacimiento,
+         a.genero, a.email, a.telefono_principal, a.telefono_secundario, a.whatsapp, a.ocupacion, a.empresa,
+         a.nivel_educativo, a.estado_civil, a.nivel_compromiso, a.nivel_participacion, a.preferencia_contacto,
+         a.activo, a.created_at, a.updated_at
+ORDER BY a.created_at DESC";
 
 $result = $conn->query($sql);
 
-// Obtener estadísticas del historial para mostrar
+// Obtener estadísticas de apoderados para mostrar
 $stats_sql = "SELECT 
-    COUNT(*) as total_mensajes,
-    COUNT(CASE WHEN estado = 'enviado' THEN 1 END) as mensajes_enviados,
-    COUNT(CASE WHEN estado = 'entregado' THEN 1 END) as mensajes_entregados,
-    COUNT(CASE WHEN estado = 'leido' THEN 1 END) as mensajes_leidos,
-    COUNT(CASE WHEN estado = 'fallido' THEN 1 END) as mensajes_fallidos,
-    COUNT(CASE WHEN tipo = 'email' THEN 1 END) as total_emails,
-    COUNT(CASE WHEN tipo = 'whatsapp' THEN 1 END) as total_whatsapp,
-    COUNT(CASE WHEN tipo = 'sms' THEN 1 END) as total_sms,
-    SUM(costo) as costo_total,
-    ROUND(AVG(CASE WHEN estado IN ('entregado', 'leido') THEN 1 ELSE 0 END) * 100, 2) as tasa_entrega,
-    ROUND(AVG(CASE WHEN estado = 'leido' THEN 1 ELSE 0 END) * 100, 2) as tasa_lectura,
-    COUNT(CASE WHEN DATE(created_at) = CURDATE() THEN 1 END) as mensajes_hoy,
-    COUNT(CASE WHEN DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as mensajes_semana
-FROM mensajes_enviados me
-WHERE $where_clause";
+    COUNT(*) as total_apoderados,
+    COUNT(CASE WHEN tipo_apoderado = 'titular' THEN 1 END) as apoderados_titulares,
+    COUNT(CASE WHEN tipo_apoderado = 'suplente' THEN 1 END) as apoderados_suplentes,
+    COUNT(CASE WHEN tipo_apoderado = 'economico' THEN 1 END) as apoderados_economicos,
+    COUNT(CASE WHEN nivel_compromiso = 'alto' THEN 1 END) as compromiso_alto,
+    COUNT(CASE WHEN nivel_participacion = 'muy_activo' THEN 1 END) as muy_activos,
+    COUNT(CASE WHEN nivel_participacion = 'activo' THEN 1 END) as activos,
+    COUNT(CASE WHEN DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 END) as nuevos_mes,
+    COUNT(CASE WHEN email IS NOT NULL AND email != '' THEN 1 END) as con_email,
+    COUNT(CASE WHEN whatsapp IS NOT NULL AND whatsapp != '' THEN 1 END) as con_whatsapp
+FROM apoderados
+WHERE activo = 1";
 
 $stats_result = $conn->query($stats_sql);
 $stats = $stats_result->fetch_assoc();
 
-// Obtener estadísticas de fallos por tipo
-$fallos_sql = "SELECT 
-    tipo,
-    COUNT(*) as total_fallos,
-    COUNT(CASE WHEN error_mensaje LIKE '%timeout%' OR error_mensaje LIKE '%conexion%' THEN 1 END) as fallos_conexion,
-    COUNT(CASE WHEN error_mensaje LIKE '%invalid%' OR error_mensaje LIKE '%formato%' THEN 1 END) as fallos_formato,
-    COUNT(CASE WHEN error_mensaje LIKE '%quota%' OR error_mensaje LIKE '%limit%' THEN 1 END) as fallos_limite
-FROM mensajes_enviados me
-WHERE estado = 'fallido' AND $where_clause
-GROUP BY tipo";
+// Obtener estadísticas por nivel socioeconómico
+$socioeconomico_sql = "SELECT 
+    f.nivel_socioeconomico,
+    COUNT(DISTINCT a.id) as cantidad_apoderados
+FROM apoderados a
+LEFT JOIN familias f ON a.familia_id = f.id
+WHERE a.activo = 1 AND f.nivel_socioeconomico IS NOT NULL
+GROUP BY f.nivel_socioeconomico
+ORDER BY f.nivel_socioeconomico";
 
-$fallos_result = $conn->query($fallos_sql);
-$fallos_stats = [];
-while($fallo = $fallos_result->fetch_assoc()) {
-    $fallos_stats[$fallo['tipo']] = $fallo;
+$socioeconomico_result = $conn->query($socioeconomico_sql);
+$socioeconomico_stats = [];
+while($socio = $socioeconomico_result->fetch_assoc()) {
+    $socioeconomico_stats[$socio['nivel_socioeconomico']] = $socio['cantidad_apoderados'];
 }
 
 // Obtener nombre del sistema para el título
@@ -141,7 +106,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
 <html lang="es">
   <!-- [Head] start -->
   <head>
-    <title>Historial de Comunicaciones - <?php echo $nombre_sistema; ?></title>
+    <title>Registro de Apoderados - <?php echo $nombre_sistema; ?></title>
     <!-- [Meta] -->
     <meta charset="utf-8" />
     <meta
@@ -151,11 +116,11 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta
       name="description"
-      content="Sistema CRM para instituciones educativas - Historial de Comunicaciones"
+      content="Sistema CRM para instituciones educativas - Registro de Apoderados"
     />
     <meta
       name="keywords"
-      content="CRM, Educación, Comunicaciones, Historial, Reportes, Análisis"
+      content="CRM, Educación, Apoderados, Familias, Perfil, Gestión"
     />
     <meta name="author" content="CRM Escolar" />
 
@@ -190,148 +155,201 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     />
     <link rel="stylesheet" href="assets/css/style-preset.css" />
     
-    <!-- Custom styles for historial comunicaciones -->
+    <!-- Custom styles for apoderados -->
     <style>
-      .badge-tipo {
+      .badge-tipo-apoderado {
         font-size: 0.75rem;
         padding: 0.25rem 0.5rem;
         border-radius: 12px;
         font-weight: 500;
         color: white;
       }
-      .tipo-email { background-color: #dc3545; }
-      .tipo-whatsapp { background-color: #25d366; }
-      .tipo-sms { background-color: #007bff; }
+      .tipo-titular { background-color: #28a745; }
+      .tipo-suplente { background-color: #fd7e14; }
+      .tipo-economico { background-color: #6f42c1; }
       
-      .badge-estado {
+      .badge-nivel-socio {
         font-size: 0.75rem;
         padding: 0.25rem 0.5rem;
         border-radius: 8px;
         font-weight: 500;
         color: white;
       }
-      .estado-pendiente { background-color: #6c757d; }
-      .estado-enviado { background-color: #007bff; }
-      .estado-entregado { background-color: #28a745; }
-      .estado-leido { 
-        background-color: #17a2b8; 
-        position: relative;
-      }
-      .estado-leido::after {
-        content: '👁';
-        margin-left: 4px;
-      }
-      .estado-fallido { background-color: #dc3545; }
+      .nivel-A { background-color: #17a2b8; }
+      .nivel-B { background-color: #28a745; }
+      .nivel-C { background-color: #ffc107; color: #856404; }
+      .nivel-D { background-color: #fd7e14; }
+      .nivel-E { background-color: #dc3545; }
       
-      .badge-destinatario {
+      .badge-compromiso {
+        font-size: 0.7rem;
+        padding: 0.2rem 0.4rem;
+        border-radius: 10px;
+        font-weight: bold;
+      }
+      .compromiso-alto { background-color: #28a745; color: white; }
+      .compromiso-medio { background-color: #ffc107; color: #856404; }
+      .compromiso-bajo { background-color: #dc3545; color: white; }
+      
+      .badge-participacion {
         font-size: 0.7rem;
         padding: 0.2rem 0.4rem;
         border-radius: 6px;
         font-weight: 500;
-        background-color: #e3f2fd;
-        color: #1565c0;
-        border: 1px solid #bbdefb;
+      }
+      .participacion-muy_activo { 
+        background-color: #d4edda; 
+        color: #155724; 
+        border: 1px solid #c3e6cb;
+      }
+      .participacion-activo { 
+        background-color: #d1ecf1; 
+        color: #0c5460; 
+        border: 1px solid #bee5eb;
+      }
+      .participacion-poco_activo { 
+        background-color: #fff3cd; 
+        color: #856404; 
+        border: 1px solid #ffeaa7;
+      }
+      .participacion-inactivo { 
+        background-color: #f8d7da; 
+        color: #721c24; 
+        border: 1px solid #f5c6cb;
       }
       
-      .mensaje-info {
+      .apoderado-info {
         display: flex;
         flex-direction: column;
         gap: 3px;
       }
       
-      .mensaje-asunto {
+      .apoderado-nombre {
         font-weight: 600;
         color: #2c3e50;
-        font-size: 0.85rem;
+        font-size: 0.9rem;
       }
       
-      .mensaje-preview {
+      .apoderado-documento {
+        font-family: 'Courier New', monospace;
         font-size: 0.75rem;
-        color: #6c757d;
-        font-style: italic;
-        max-width: 250px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        background-color: #f8f9fa;
+        padding: 1px 4px;
+        border-radius: 3px;
+        border: 1px solid #e9ecef;
+        color: #495057;
       }
       
-      .destinatario-info {
+      .apoderado-edad {
+        font-size: 0.7rem;
+        color: #6c757d;
+      }
+      
+      .contacto-info {
         display: flex;
         flex-direction: column;
         gap: 2px;
       }
       
-      .destinatario-nombre {
-        font-weight: 500;
-        color: #495057;
+      .contacto-principal {
+        font-family: 'Courier New', monospace;
         font-size: 0.8rem;
-        max-width: 180px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      
-      .destinatario-contacto {
-        font-family: 'Courier New', monospace;
-        font-size: 0.75rem;
-        color: #6c757d;
-      }
-      
-      .tiempo-entrega {
-        font-size: 0.7rem;
-        padding: 0.15rem 0.3rem;
-        border-radius: 8px;
+        color: #495057;
         font-weight: 500;
       }
       
-      .entrega-rapida {
-        background-color: #d4edda;
-        color: #155724;
-      }
-      
-      .entrega-normal {
-        background-color: #fff3cd;
-        color: #856404;
-      }
-      
-      .entrega-lenta {
-        background-color: #f8d7da;
-        color: #721c24;
-      }
-      
-      .fecha-envio {
+      .contacto-secundario {
         font-size: 0.75rem;
         color: #6c757d;
       }
       
-      .costo-mensaje {
-        font-family: 'Courier New', monospace;
+      .contacto-whatsapp {
         font-size: 0.7rem;
-        font-weight: bold;
-        color: #28a745;
+        color: #25d366;
+        font-weight: 500;
       }
       
-      .error-detalle {
-        font-size: 0.7rem;
-        color: #dc3545;
-        background-color: #f8d7da;
-        padding: 2px 4px;
-        border-radius: 3px;
+      .contacto-email {
+        font-size: 0.75rem;
+        color: #6c757d;
+        font-style: italic;
         max-width: 150px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        cursor: pointer;
       }
       
-      .plantilla-usado {
-        font-size: 0.7rem;
-        background-color: #e8f4fd;
-        color: #0c5460;
-        padding: 2px 6px;
-        border-radius: 4px;
-        border: 1px solid #bee5eb;
+      .familia-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
       }
+      
+      .familia-codigo {
+        font-family: 'Courier New', monospace;
+        font-size: 0.75rem;
+        background-color: #e3f2fd;
+        color: #1565c0;
+        padding: 1px 4px;
+        border-radius: 3px;
+        border: 1px solid #bbdefb;
+      }
+      
+      .familia-apellido {
+        font-weight: 500;
+        color: #495057;
+        font-size: 0.8rem;
+      }
+      
+      .familia-direccion {
+        font-size: 0.7rem;
+        color: #6c757d;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      
+      .estudiantes-info {
+        font-size: 0.75rem;
+        color: #495057;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      
+      .estudiantes-count {
+        font-weight: bold;
+        color: #28a745;
+      }
+      
+      .profesional-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 0.75rem;
+      }
+      
+      .profesional-ocupacion {
+        font-weight: 500;
+        color: #495057;
+      }
+      
+      .profesional-empresa {
+        color: #6c757d;
+        font-style: italic;
+      }
+      
+      .calificacion-participacion {
+        font-size: 0.7rem;
+        padding: 0.2rem 0.4rem;
+        border-radius: 8px;
+        font-weight: 500;
+      }
+      .calificacion-excelente { background-color: #d4edda; color: #155724; }
+      .calificacion-buena { background-color: #d1ecf1; color: #0c5460; }
+      .calificacion-regular { background-color: #fff3cd; color: #856404; }
       
       .stats-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -360,33 +378,25 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
         opacity: 0.9;
       }
       
-      .filtros-panel {
-        background-color: #fff;
-        border: 1px solid #e9ecef;
-        border-radius: 8px;
-        padding: 20px;
-        margin-bottom: 20px;
-      }
-      
-      .btn-grupo-historial {
+      .btn-grupo-apoderado {
         display: flex;
         gap: 2px;
         flex-wrap: wrap;
       }
       
-      .btn-grupo-historial .btn {
+      .btn-grupo-apoderado .btn {
         padding: 0.25rem 0.5rem;
         font-size: 0.75rem;
       }
 
-      .metricas-panel {
+      .socioeconomico-panel {
         background-color: #f8f9fa;
         border-radius: 8px;
         padding: 15px;
         margin-bottom: 15px;
       }
 
-      .metrica-item {
+      .socio-item {
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -394,18 +404,17 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
         border-bottom: 1px solid #e9ecef;
       }
 
-      .metrica-item:last-child {
+      .socio-item:last-child {
         border-bottom: none;
       }
 
-      .metrica-valor {
-        font-weight: bold;
-        color: #495057;
+      .preferencia-contacto {
+        font-size: 0.7rem;
+        padding: 0.1rem 0.3rem;
+        border-radius: 4px;
+        background-color: #e8f4fd;
+        color: #0c5460;
       }
-
-      .tasa-exitosa { color: #28a745; }
-      .tasa-regular { color: #ffc107; }
-      .tasa-baja { color: #dc3545; }
     </style>
   </head>
   <!-- [Head] end -->
@@ -437,10 +446,10 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                 <ul class="breadcrumb">
                   <li class="breadcrumb-item"><a href="index.php">Inicio</a></li>
                   <li class="breadcrumb-item">
-                    <a href="javascript: void(0)">Comunicación</a>
+                    <a href="javascript: void(0)">Gestión Familiar</a>
                   </li>
                   <li class="breadcrumb-item" aria-current="page">
-                    Historial de Comunicaciones
+                    Apoderados
                   </li>
                 </ul>
               </div>
@@ -456,88 +465,53 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
               <div class="card-header d-flex align-items-center justify-content-between">
                 <div>
                   <h3 class="mb-1">
-                    Historial de Comunicaciones
+                    Registro y Perfil de Apoderados
                   </h3>
                   <small class="text-muted">
-                    Consulta el historial completo de mensajes enviados con métricas de entrega y análisis detallado.
-                    <?php if($fecha_inicio || $fecha_fin || $tipo_mensaje || $estado_mensaje || $contacto_filtro): ?>
-                      <strong>(Filtros aplicados)</strong>
-                    <?php endif; ?>
+                    Gestiona la información completa de los apoderados, incluyendo datos personales, 
+                    contacto, información familiar y vinculación con estudiantes.
                   </small>
                 </div>
                 <div class="d-flex gap-2 flex-wrap">
-                  <button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#modalEstadoEntrega">
-                    <i class="ti ti-truck me-1"></i>
-                    Estado Entrega
-                  </button>
-                  <button type="button" class="btn btn-outline-success btn-sm" onclick="exportarHistorial()">
-                    <i class="fas fa-file-excel me-1"></i>
+                  <button type="button" class="btn btn-outline-info btn-sm" onclick="exportarApoderados()">
+                    <i class="ti ti-file-spreadsheet me-1"></i>
                     Exportar Excel
                   </button>
-                  <button type="button" class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#modalConsultarContacto">
-                    <i class="fas fa-user me-1"></i>
-                    Consultar por Contacto
+                  <button type="button" class="btn btn-outline-success btn-sm" data-bs-toggle="modal" data-bs-target="#modalVincularEstudiantes">
+                    <i class="ti ti-link me-1"></i>
+                    Vincular Estudiantes
                   </button>
-                  <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalGenerarReporte">
-                    <i class="ti ti-file-report me-1"></i>
-                    Generar Reporte
+                  <button type="button" class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#modalConsultarFicha">
+                    <i class="ti ti-id-badge me-1"></i>
+                    Consultar Ficha
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalRegistrarApoderado">
+                    <i class="ti ti-user-plus me-1"></i>
+                    Registrar Apoderado
                   </button>
                 </div>
               </div>
               
               <div class="card-body">
-                <!-- Métricas Adicionales -->
-                <?php if($result->num_rows > 0): ?>
-                <div class="metricas-panel">
-                  <h6 class="mb-3">Métricas del Período Filtrado</h6>
-                  <div class="row">
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>Emails:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['total_emails']); ?></span>
-                      </div>
-                    </div>
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>WhatsApp:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['total_whatsapp']); ?></span>
-                      </div>
-                    </div>
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>SMS:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['total_sms']); ?></span>
-                      </div>
-                    </div>
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>Esta Semana:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['mensajes_semana']); ?></span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <?php endif; ?>
-
-                <!-- Tabla de historial -->
+                <!-- Tabla de apoderados -->
                 <div class="dt-responsive table-responsive">
                   <table
-                    id="historial-table"
+                    id="apoderados-table"
                     class="table table-striped table-bordered nowrap"
                   >
                     <thead>
                       <tr>
                         <th width="4%">ID</th>
-                        <th width="6%">Tipo</th>
-                        <th width="16%">Mensaje</th>
-                        <th width="16%">Destinatario</th>
-                        <th width="8%">Plantilla</th>
-                        <th width="8%">Estado</th>
-                        <th width="10%">Fecha Envío</th>
-                        <th width="8%">Tiempo Entrega</th>
-                        <th width="6%">Costo</th>
-                        <th width="10%">Error/Observaciones</th>
-                        <th width="8%">Acciones</th>
+                        <th width="15%">Apoderado</th>
+                        <th width="8%">Documento</th>
+                        <th width="12%">Contacto</th>
+                        <th width="10%">Familia</th>
+                        <th width="8%">Tipo</th>
+                        <th width="10%">Información Profesional</th>
+                        <th width="8%">Participación</th>
+                        <th width="10%">Estudiantes</th>
+                        <th width="8%">Registro</th>
+                        <th width="7%">Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -545,112 +519,126 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                       if ($result->num_rows > 0) {
                           while($row = $result->fetch_assoc()) {
                               // Formatear fechas
-                              $fecha_creacion = date('d/m/Y H:i', strtotime($row['created_at']));
-                              $fecha_envio = $row['fecha_envio'] ? date('d/m/Y H:i', strtotime($row['fecha_envio'])) : 'No enviado';
-                              $fecha_entrega = $row['fecha_entrega'] ? date('d/m/Y H:i', strtotime($row['fecha_entrega'])) : '';
-                              $fecha_lectura = $row['fecha_lectura'] ? date('d/m/Y H:i', strtotime($row['fecha_lectura'])) : '';
+                              $fecha_registro = date('d/m/Y', strtotime($row['created_at']));
                               
-                              // Determinar clase CSS para el tipo
-                              $tipo_class = 'tipo-' . $row['tipo'];
+                              // Determinar clase CSS para el tipo de apoderado
+                              $tipo_class = 'tipo-' . $row['tipo_apoderado'];
                               
-                              // Determinar clase CSS para el estado
-                              $estado_class = 'estado-' . $row['estado'];
+                              // Determinar clase CSS para nivel socioeconómico
+                              $nivel_socio = $row['nivel_socioeconomico'] ?? '';
+                              $nivel_socio_class = $nivel_socio ? 'nivel-' . $nivel_socio : '';
                               
-                              // Calcular tiempo de entrega
-                              $tiempo_entrega = '';
-                              if ($row['tiempo_entrega_minutos'] !== null) {
-                                  $minutos = (int)$row['tiempo_entrega_minutos'];
-                                  if ($minutos < 5) {
-                                      $tiempo_class = 'entrega-rapida';
-                                      $tiempo_entrega = $minutos . ' min';
-                                  } elseif ($minutos < 30) {
-                                      $tiempo_class = 'entrega-normal';
-                                      $tiempo_entrega = $minutos . ' min';
-                                  } else {
-                                      $tiempo_class = 'entrega-lenta';
-                                      $tiempo_entrega = $minutos > 60 ? round($minutos/60, 1) . ' hrs' : $minutos . ' min';
-                                  }
-                              } else {
-                                  $tiempo_class = '';
-                                  $tiempo_entrega = '-';
-                              }
+                              // Determinar clase de compromiso
+                              $compromiso = $row['nivel_compromiso'] ?? 'medio';
+                              $compromiso_class = 'compromiso-' . $compromiso;
+                              
+                              // Determinar clase de participación
+                              $participacion = $row['nivel_participacion'] ?? 'activo';
+                              $participacion_class = 'participacion-' . $participacion;
+                              
+                              // Determinar calificación de participación
+                              $calificacion = $row['calificacion_participacion'] ?? 'regular';
+                              $calificacion_class = 'calificacion-' . $calificacion;
                               
                               echo "<tr>";
                               echo "<td><strong>" . $row['id'] . "</strong></td>";
-                              echo "<td><span class='badge badge-tipo $tipo_class'>" . 
-                                   strtoupper($row['tipo']) . "</span></td>";
                               echo "<td>
-                                      <div class='mensaje-info'>
-                                        <span class='mensaje-asunto'>" . htmlspecialchars($row['asunto'] ?? 'Sin asunto') . "</span>
-                                        <span class='mensaje-preview'>" . htmlspecialchars($row['contenido_preview']) . "...</span>
+                                      <div class='apoderado-info'>
+                                        <span class='apoderado-nombre'>" . htmlspecialchars($row['nombre_completo']) . "</span>
+                                        <span class='apoderado-documento'>" . 
+                                        htmlspecialchars($row['tipo_documento'] . ': ' . $row['numero_documento']) . "</span>
+                                        <span class='apoderado-edad'>" . 
+                                        ($row['edad'] ? $row['edad'] . ' años' : 'Edad no registrada') . " - " . 
+                                        ($row['genero'] == 'M' ? 'Masculino' : ($row['genero'] == 'F' ? 'Femenino' : 'No especificado')) . "</span>
                                       </div>
                                     </td>";
                               echo "<td>
-                                      <div class='destinatario-info'>
-                                        <span class='badge badge-destinatario'>" . $row['tipo_destinatario'] . "</span>
-                                        <span class='destinatario-nombre' title='" . htmlspecialchars($row['destinatario_completo']) . "'>" . 
-                                        htmlspecialchars($row['destinatario_completo']) . "</span>
-                                        <span class='destinatario-contacto'>" . 
-                                        htmlspecialchars($row['destinatario_email'] ?? $row['destinatario_telefono'] ?? '') . "</span>
+                                      <div class='contacto-info'>
+                                        <span class='contacto-principal'>" . htmlspecialchars($row['telefono_principal'] ?? 'Sin teléfono') . "</span>
+                                        " . ($row['telefono_secundario'] ? "<span class='contacto-secundario'>Alt: " . htmlspecialchars($row['telefono_secundario']) . "</span>" : "") . "
+                                        " . ($row['whatsapp'] ? "<span class='contacto-whatsapp'>WA: " . htmlspecialchars($row['whatsapp']) . "</span>" : "") . "
                                       </div>
                                     </td>";
-                              echo "<td>" . 
-                                   ($row['plantilla_nombre'] ? "<span class='plantilla-usado'>" . htmlspecialchars($row['plantilla_nombre']) . "</span>" : "<span class='text-muted'>Manual</span>") . 
-                                   "</td>";
-                              echo "<td><span class='badge badge-estado $estado_class'>" . 
-                                   ucfirst($row['estado']) . "</span></td>";
                               echo "<td>
-                                      <div class='fecha-envio'>
-                                        <strong>" . $fecha_envio . "</strong>" .
-                                        ($fecha_entrega ? "<br><small>Entregado: " . $fecha_entrega . "</small>" : "") .
-                                        ($fecha_lectura ? "<br><small>Leído: " . $fecha_lectura . "</small>" : "") . "
+                                      <div class='contacto-info'>
+                                        <span class='contacto-email' title='" . htmlspecialchars($row['email'] ?? '') . "'>" . 
+                                        htmlspecialchars($row['email'] ?? 'Sin email') . "</span>
+                                        <span class='preferencia-contacto'>Pref: " . ucfirst($row['preferencia_contacto'] ?? 'email') . "</span>
                                       </div>
                                     </td>";
-                              echo "<td>" . 
-                                   ($tiempo_entrega != '-' ? "<span class='tiempo-entrega $tiempo_class'>" . $tiempo_entrega . "</span>" : 
-                                   "<span class='text-muted'>-</span>") . "</td>";
-                              echo "<td>" . 
-                                   ($row['costo'] > 0 ? "<span class='costo-mensaje'>S/ " . number_format($row['costo'], 4) . "</span>" : 
-                                   "<span class='text-muted'>Gratis</span>") . "</td>";
-                              echo "<td>" . 
-                                   ($row['error_mensaje'] ? "<span class='error-detalle' title='" . htmlspecialchars($row['error_mensaje']) . "'>Ver Error</span>" : 
-                                   ($row['mensaje_id_externo'] ? "<span class='text-muted' title='ID: " . htmlspecialchars($row['mensaje_id_externo']) . "'>ID: " . substr($row['mensaje_id_externo'], 0, 8) . "...</span>" :
-                                   "<span class='text-muted'>-</span>")) . "</td>";
                               echo "<td>
-                                      <div class='btn-grupo-historial'>
-                                        <button type='button' class='btn btn-outline-info btn-ver-completo' 
+                                      <div class='familia-info'>
+                                        <span class='familia-codigo'>" . htmlspecialchars($row['codigo_familia'] ?? '') . "</span>
+                                        <span class='familia-apellido'>Fam. " . htmlspecialchars($row['familia_apellido'] ?? '') . "</span>
+                                        " . ($nivel_socio ? "<span class='badge badge-nivel-socio $nivel_socio_class'>" . $nivel_socio . "</span>" : "") . "
+                                        <span class='familia-direccion' title='" . htmlspecialchars($row['familia_direccion'] ?? '') . "'>" . 
+                                        htmlspecialchars($row['distrito'] ?? 'Sin ubicación') . "</span>
+                                      </div>
+                                    </td>";
+                              echo "<td><span class='badge badge-tipo-apoderado $tipo_class'>" . 
+                                   ucfirst($row['tipo_apoderado']) . "</span></td>";
+                              echo "<td>
+                                      <div class='profesional-info'>
+                                        <span class='profesional-ocupacion'>" . htmlspecialchars($row['ocupacion'] ?? 'No especificada') . "</span>
+                                        " . ($row['empresa'] ? "<span class='profesional-empresa'>" . htmlspecialchars($row['empresa']) . "</span>" : "") . "
+                                        " . ($row['nivel_educativo'] ? "<small class='text-muted'>" . htmlspecialchars($row['nivel_educativo']) . "</small>" : "") . "
+                                      </div>
+                                    </td>";
+                              echo "<td>
+                                      <div class='contacto-info'>
+                                        <span class='badge badge-compromiso $compromiso_class'>" . ucfirst($compromiso) . "</span>
+                                        <span class='badge badge-participacion $participacion_class'>" . 
+                                        str_replace('_', ' ', ucfirst($participacion)) . "</span>
+                                        <span class='calificacion-participacion $calificacion_class'>" . ucfirst($calificacion) . "</span>
+                                      </div>
+                                    </td>";
+                              echo "<td>
+                                      <div class='estudiantes-info' title='" . htmlspecialchars($row['estudiantes_nombres'] ?? '') . "'>
+                                        <span class='estudiantes-count'>" . $row['total_estudiantes'] . " estudiante(s)</span>
+                                        <div style='font-size: 0.7rem; color: #6c757d;'>" . 
+                                        htmlspecialchars($row['estudiantes_nombres'] ?? 'Sin estudiantes vinculados') . "</div>
+                                      </div>
+                                    </td>";
+                              echo "<td><span class='fecha-contacto'>" . $fecha_registro . "</span></td>";
+                              echo "<td>
+                                      <div class='btn-grupo-apoderado'>
+                                        <button type='button' class='btn btn-outline-info btn-consultar-ficha' 
                                                 data-id='" . $row['id'] . "'
-                                                title='Ver Mensaje Completo'>
+                                                title='Ver Ficha Completa'>
                                           <i class='ti ti-eye'></i>
                                         </button>
-                                        " . ($row['estado'] == 'fallido' ? 
-                                        "<button type='button' class='btn btn-outline-warning btn-reenviar' 
+                                        <button type='button' class='btn btn-outline-primary btn-editar-apoderado' 
                                                 data-id='" . $row['id'] . "'
-                                                title='Reenviar'>
-                                          <i class='ti ti-refresh'></i>
-                                        </button>" : "") . "
+                                                title='Editar Datos'>
+                                          <i class='ti ti-edit'></i>
+                                        </button>
+                                        <button type='button' class='btn btn-outline-success btn-vincular-estudiantes' 
+                                                data-id='" . $row['id'] . "'
+                                                data-nombre='" . htmlspecialchars($row['nombre_completo']) . "'
+                                                title='Vincular Estudiantes'>
+                                          <i class='ti ti-link'></i>
+                                        </button>
                                       </div>
                                     </td>";
                               echo "</tr>";
                           }
                       } else {
-                          echo "<tr><td colspan='11' class='text-center'>No hay mensajes en el historial" . 
-                               ($fecha_inicio || $fecha_fin || $tipo_mensaje || $estado_mensaje || $contacto_filtro ? " con los filtros aplicados" : "") . "</td></tr>";
+                          echo "<tr><td colspan='11' class='text-center'>No hay apoderados registrados</td></tr>";
                       }
                       ?>
                     </tbody>
                     <tfoot>
                       <tr>
                         <th>ID</th>
+                        <th>Apoderado</th>
+                        <th>Documento</th>
+                        <th>Contacto</th>
+                        <th>Familia</th>
                         <th>Tipo</th>
-                        <th>Mensaje</th>
-                        <th>Destinatario</th>
-                        <th>Plantilla</th>
-                        <th>Estado</th>
-                        <th>Fecha Envío</th>
-                        <th>Tiempo Entrega</th>
-                        <th>Costo</th>
-                        <th>Error/Observaciones</th>
+                        <th>Información Profesional</th>
+                        <th>Participación</th>
+                        <th>Estudiantes</th>
+                        <th>Registro</th>
                         <th>Acciones</th>
                       </tr>
                     </tfoot>
@@ -665,10 +653,10 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     </section>
 
     <!-- Incluir Modales -->
-    <?php include 'modals/comunicaciones/modal_consultar_contacto.php'; ?>
-    <?php include 'modals/comunicaciones/modal_filtrar_fechas.php'; ?>
-    <?php include 'modals/comunicaciones/modal_estado_entrega.php'; ?>
-    <?php include 'modals/comunicaciones/modal_generar_reporte.php'; ?>
+    <?php include 'modals/apoderados/modal_registrar_apoderado.php'; ?>
+    <?php include 'modals/apoderados/modal_editar_datos.php'; ?>
+    <?php include 'modals/apoderados/modal_consultar_ficha.php'; ?>
+    <?php include 'modals/apoderados/modal_vincular_estudiantes.php'; ?>
 
     <?php include 'includes/footer.php'; ?>
     
@@ -699,10 +687,10 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     <script>
       $(document).ready(function() {
             // Inicializar DataTable con filtros integrados
-            var table = $("#historial-table").DataTable({
+            var table = $("#apoderados-table").DataTable({
               "language": {
                 "decimal": "",
-                "emptyTable": "No hay mensajes disponibles en el historial",
+                "emptyTable": "No hay apoderados disponibles en la tabla",
                 "info": "Mostrando _START_ a _END_ de _TOTAL_ registros",
                 "infoEmpty": "Mostrando 0 a 0 de 0 registros",
                 "infoFiltered": "(filtrado de _MAX_ registros totales)",
@@ -754,139 +742,147 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
               }
             });
 
-            // Función para exportar historial a Excel
-            window.exportarHistorial = function() {
-              var filtros = {
-                fecha_inicio: '<?php echo $fecha_inicio; ?>',
-                fecha_fin: '<?php echo $fecha_fin; ?>',
-                tipo_mensaje: '<?php echo $tipo_mensaje; ?>',
-                estado_mensaje: '<?php echo $estado_mensaje; ?>',
-                contacto_filtro: '<?php echo $contacto_filtro; ?>'
-              };
-              
-              var url = 'exports/historial_comunicaciones_excel.php?' + $.param(filtros);
-              window.open(url, '_blank');
+            // Función para exportar apoderados a Excel
+            window.exportarApoderados = function() {
+              window.open('exports/apoderados_excel.php', '_blank');
             };
 
-            // Manejar click en botón ver mensaje completo
-            $(document).on('click', '.btn-ver-completo', function() {
+            // Manejar click en botón consultar ficha
+            $(document).on('click', '.btn-consultar-ficha', function() {
                 var id = $(this).data('id');
-                cargarMensajeCompleto(id);
+                cargarFichaCompleta(id);
             });
 
-            // Manejar click en botón reenviar
-            $(document).on('click', '.btn-reenviar', function() {
+            // Manejar click en botón editar apoderado
+            $(document).on('click', '.btn-editar-apoderado', function() {
                 var id = $(this).data('id');
-                if (confirm('¿Está seguro de que desea reenviar este mensaje?')) {
-                    reenviarMensaje(id);
-                }
+                cargarDatosEdicion(id);
             });
 
-            // Función para cargar mensaje completo
-            function cargarMensajeCompleto(id) {
+            // Manejar click en botón vincular estudiantes
+            $(document).on('click', '.btn-vincular-estudiantes', function() {
+                var id = $(this).data('id');
+                var nombre = $(this).data('nombre');
+                
+                $('#vincular_apoderado_id').val(id);
+                $('#vincular_apoderado_nombre').text(nombre);
+                cargarEstudiantesDisponibles(id);
+                $('#modalVincularEstudiantes').modal('show');
+            });
+
+            // Función para cargar ficha completa
+            function cargarFichaCompleta(id) {
               $.ajax({
-                url: 'actions/obtener_mensaje_completo.php',
+                url: 'actions/obtener_ficha_apoderado.php',
                 method: 'POST',
                 data: { id: id },
                 dataType: 'json',
                 success: function(response) {
                   if (response.success) {
-                    mostrarMensajeCompleto(response.data);
+                    mostrarFichaCompleta(response.data);
                   } else {
-                    alert('Error al cargar el mensaje: ' + response.message);
+                    alert('Error al cargar la ficha: ' + response.message);
                   }
                 },
                 error: function() {
-                  alert('Error de conexión al obtener el mensaje completo.');
+                  alert('Error de conexión al obtener la ficha del apoderado.');
                 }
               });
             }
 
-            // Función para reenviar mensaje
-            function reenviarMensaje(id) {
+            // Función para cargar datos de edición
+            function cargarDatosEdicion(id) {
               $.ajax({
-                url: 'actions/reenviar_mensaje_historial.php',
+                url: 'actions/obtener_apoderado_edicion.php',
                 method: 'POST',
                 data: { id: id },
                 dataType: 'json',
                 success: function(response) {
                   if (response.success) {
-                    alert('Mensaje programado para reenvío.');
-                    location.reload();
+                    llenarFormularioEdicion(response.data);
+                    $('#modalEditarApoderado').modal('show');
                   } else {
-                    alert('Error al programar reenvío: ' + response.message);
+                    alert('Error al cargar los datos: ' + response.message);
                   }
                 },
                 error: function() {
-                  alert('Error de conexión al reenviar el mensaje.');
+                  alert('Error de conexión al obtener los datos del apoderado.');
                 }
               });
             }
 
-            // Función para mostrar mensaje completo
-            function mostrarMensajeCompleto(data) {
-              var modalHTML = `
-                <div class="modal fade" id="modalMensajeCompleto" tabindex="-1">
-                  <div class="modal-dialog modal-lg">
-                    <div class="modal-content">
-                      <div class="modal-header">
-                        <h5 class="modal-title">Mensaje Completo - ID: ${data.id}</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                      </div>
-                      <div class="modal-body">
-                        <div class="row">
-                          <div class="col-md-6">
-                            <strong>Tipo:</strong> ${data.tipo.toUpperCase()}<br>
-                            <strong>Estado:</strong> ${data.estado}<br>
-                            <strong>Destinatario:</strong> ${data.destinatario}<br>
-                            <strong>Fecha Envío:</strong> ${data.fecha_envio || 'No enviado'}
-                          </div>
-                          <div class="col-md-6">
-                            <strong>Asunto:</strong> ${data.asunto || 'Sin asunto'}<br>
-                            <strong>Costo:</strong> S/ ${data.costo || '0.00'}<br>
-                            <strong>Plantilla:</strong> ${data.plantilla || 'Manual'}<br>
-                            <strong>ID Externo:</strong> ${data.mensaje_id_externo || 'N/A'}
-                          </div>
-                        </div>
-                        <hr>
-                        <div>
-                          <strong>Contenido:</strong>
-                          <div class="border p-3 mt-2" style="max-height: 300px; overflow-y: auto;">
-                            ${data.contenido}
-                          </div>
-                        </div>
-                        ${data.error_mensaje ? `<div class="alert alert-danger mt-3"><strong>Error:</strong> ${data.error_mensaje}</div>` : ''}
-                      </div>
-                      <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              `;
-              
-              // Remover modal anterior si existe
-              $('#modalMensajeCompleto').remove();
-              // Agregar nuevo modal
-              $('body').append(modalHTML);
-              // Mostrar modal
-              $('#modalMensajeCompleto').modal('show');
+            // Función para cargar estudiantes disponibles
+            function cargarEstudiantesDisponibles(apoderado_id) {
+              $.ajax({
+                url: 'actions/obtener_estudiantes_disponibles.php',
+                method: 'POST',
+                data: { apoderado_id: apoderado_id },
+                dataType: 'json',
+                success: function(response) {
+                  if (response.success) {
+                    mostrarEstudiantesDisponibles(response.data);
+                  } else {
+                    alert('Error al cargar estudiantes: ' + response.message);
+                  }
+                },
+                error: function() {
+                  alert('Error de conexión al obtener estudiantes disponibles.');
+                }
+              });
             }
 
-            // Tooltip para elementos con title
+            // Función para mostrar ficha completa
+            function mostrarFichaCompleta(data) {
+              // Cargar datos en modal de consulta de ficha
+              $('#modalConsultarFicha').modal('show');
+              // Implementar llenado de datos en el modal
+              console.log('Ficha completa:', data);
+            }
+
+            // Función para llenar formulario de edición
+            function llenarFormularioEdicion(data) {
+              // Implementar llenado de formulario
+              console.log('Datos para edición:', data);
+            }
+
+            // Función para mostrar estudiantes disponibles
+            function mostrarEstudiantesDisponibles(data) {
+              // Implementar lista de estudiantes
+              console.log('Estudiantes disponibles:', data);
+            }
+
+            // Validación de documentos en tiempo real
+            $(document).on('input', 'input[name="numero_documento"]', function() {
+                var tipoDoc = $('select[name="tipo_documento"]').val();
+                var numero = $(this).val();
+                
+                if (tipoDoc === 'DNI' && numero.length === 8) {
+                    validarDocumento(tipoDoc, numero);
+                } else if (tipoDoc === 'CE' && numero.length >= 9) {
+                    validarDocumento(tipoDoc, numero);
+                }
+            });
+
+            // Función para validar documento
+            function validarDocumento(tipo, numero) {
+              $.ajax({
+                url: 'actions/validar_documento.php',
+                method: 'POST',
+                data: { tipo: tipo, numero: numero },
+                dataType: 'json',
+                success: function(response) {
+                  if (response.existe) {
+                    alert('¡Atención! Ya existe un apoderado registrado con este documento.');
+                  }
+                },
+                error: function() {
+                  console.log('Error al validar documento');
+                }
+              });
+            }
+
+            // Tooltip para elementos
             $('[title]').tooltip();
-
-            // Auto-actualización cada 5 minutos para mensajes en proceso
-            setInterval(function() {
-              var mensajesPendientes = $('.estado-pendiente, .estado-enviado').length;
-              if (mensajesPendientes > 0) {
-                // Solo recargar si hay mensajes en proceso y no han cambiado los filtros
-                var urlActual = window.location.href;
-                if (urlActual === window.location.href) {
-                  location.reload();
-                }
-              }
-            }, 300000); // 5 minutos
       });
     </script>
     <!-- [Page Specific JS] end -->

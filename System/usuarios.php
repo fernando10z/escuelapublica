@@ -244,7 +244,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                 </div>
                 <div class="d-flex gap-2">
                   <button type="button" class="btn btn-outline-danger btn-sm" onclick="exportarUsuariosPDF()">
-                    <i class="ti ti-file-type-pdf me-1"></i>
+                   <i class="fas fa-file-pdf me-1"></i>
                     Generar PDF
                   </button>
                   <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalNuevo">

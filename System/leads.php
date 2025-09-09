@@ -388,7 +388,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                     Validar Duplicados
                   </button>
                   <button type="button" class="btn btn-outline-danger btn-sm" onclick="exportarLeadsPDF()">
-                    <i class="ti ti-file-type-pdf me-1"></i>
+                    <i class="fas fa-file-pdf me-1"></i>
                     Generar PDF
                   </button>
                   <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalNuevoLead">
@@ -758,36 +758,159 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             });
 
             // Función para cargar datos del lead
-            function cargarDatosLead(id, accion) {
+            window.cargarDatosLead = function(id, accion) {
               $.ajax({
-                url: 'actions/obtener_lead.php',
-                method: 'POST',
-                data: { id: id, accion: accion },
-                dataType: 'json',
-                success: function(response) {
-                  if (response.success) {
-                    if (accion === 'consultar') {
-                      // Llenar modal de consulta
-                      $('#modalConsultar').modal('show');
-                    } else if (accion === 'editar') {
-                      // Llenar modal de edición
-                      $('#modalEditar').modal('show');
-                    }
-                    // Llenar los campos correspondientes con response.data
-                  } else {
-                    alert('Error al cargar los datos: ' + response.message);
+                  url: 'acciones/leads/obtener_lead.php',
+                  method: 'POST',
+                  data: { id: id, accion: accion },
+                  dataType: 'json',
+                  success: function(response) {
+                      if (response.success) {
+                          const lead = response.data;
+                          
+                          if (accion === 'consultar') {
+                              cargarModalConsultar(lead);
+                          } else if (accion === 'editar') {
+                              cargarModalEditar(lead);
+                          }
+                      } else {
+                          alert('Error al cargar los datos: ' + response.message);
+                      }
+                  },
+                  error: function() {
+                      alert('Error de conexión al obtener los datos del lead.');
                   }
-                },
-                error: function() {
-                  alert('Error de conexión al obtener los datos del lead.');
-                }
               });
+          };
+
+            function cargarModalConsultar(lead) {
+              // Información general
+              $('#view_id').text(lead.id);
+              $('#view_codigo_lead').text(lead.codigo_lead || '-');
+              $('#view_fecha_registro').text(lead.fecha_registro_formateada || '-');
+              $('#view_estado').html(`<span class="badge" style="background-color: ${lead.color_estado || '#6c757d'};">${lead.estado_lead || 'Sin estado'}</span>`);
+              $('#view_responsable').text(lead.responsable_nombre || 'Sin asignar');
+              $('#view_prioridad').html(`<span class="badge badge-prioridad prioridad-${lead.prioridad}">${lead.prioridad_formateada}</span>`);
+              $('#view_puntaje_interes').html(lead.estrellas_interes + ` (${lead.puntaje_interes || 0})`);
+              $('#view_canal').text(lead.canal_captacion || 'Sin canal');
+
+              // Pestaña Estudiante
+              $('#view_nombres_estudiante').text(lead.nombres_estudiante || '-');
+              $('#view_apellidos_estudiante').text(lead.apellidos_estudiante || '-');
+              $('#view_fecha_nacimiento').text(lead.fecha_nacimiento_formateada || '-');
+              $('#view_genero').text(lead.genero_formateado);
+              $('#view_grado_interes').text((lead.nivel_nombre || '') + (lead.grado_nombre ? ' - ' + lead.grado_nombre : ''));
+              $('#view_colegio_procedencia').text(lead.colegio_procedencia || '-');
+              $('#view_motivo_cambio').text(lead.motivo_cambio || '-');
+
+              // Pestaña Contacto
+              $('#view_nombres_contacto').text(lead.nombres_contacto || '-');
+              $('#view_apellidos_contacto').text(lead.apellidos_contacto || '-');
+              $('#view_telefono').text(lead.telefono || '-');
+              $('#view_whatsapp').text(lead.whatsapp || '-');
+              $('#view_email').text(lead.email || '-');
+
+              // Configurar enlaces de contacto
+              if (lead.telefono) {
+                  $('#link_telefono').attr('href', `tel:${lead.telefono}`).show();
+              } else {
+                  $('#link_telefono').hide();
+              }
+
+              if (lead.whatsapp) {
+                  $('#link_whatsapp').attr('href', `https://wa.me/${lead.whatsapp.replace(/[^0-9]/g, '')}`).show();
+              } else {
+                  $('#link_whatsapp').hide();
+              }
+
+              if (lead.email) {
+                  $('#link_email').attr('href', `mailto:${lead.email}`).show();
+              } else {
+                  $('#link_email').hide();
+              }
+
+              // Pestaña Seguimiento
+              $('#view_proxima_accion_fecha').text(lead.proxima_accion_formateada || '-');
+              $('#view_proxima_accion_descripcion').text(lead.proxima_accion_descripcion || '-');
+              $('#view_ultima_interaccion').text(lead.fecha_ultima_interaccion_formateada || '-');
+              $('#view_fecha_conversion').text(lead.fecha_conversion_formateada || '-');
+              $('#view_observaciones').text(lead.observaciones || '-');
+
+              // Pestaña Adicional
+              $('#view_utm_source').text(lead.utm_source || '-');
+              $('#view_utm_medium').text(lead.utm_medium || '-');
+              $('#view_utm_campaign').text(lead.utm_campaign || '-');
+              $('#view_ip_origen').text(lead.ip_origen || '-');
+              $('#view_created_at').text(lead.fecha_registro_formateada || '-');
+              $('#view_updated_at').text(lead.fecha_actualizacion_formateada || '-');
+              $('#view_activo').text(lead.activo == 1 ? 'Activo' : 'Inactivo');
+
+              $('#modalConsultar').modal('show');
+            }
+
+            function cargarModalEditar(lead) {
+              // Cargar datos básicos
+              $('#edit_id').val(lead.id);
+              $('#edit_nombres_estudiante').val(lead.nombres_estudiante);
+              $('#edit_apellidos_estudiante').val(lead.apellidos_estudiante);
+              $('#edit_fecha_nacimiento_estudiante').val(lead.fecha_nacimiento_estudiante);
+              $('#edit_genero_estudiante').val(lead.genero_estudiante);
+              $('#edit_nombres_contacto').val(lead.nombres_contacto);
+              $('#edit_apellidos_contacto').val(lead.apellidos_contacto);
+              $('#edit_telefono').val(lead.telefono);
+              $('#edit_whatsapp').val(lead.whatsapp);
+              $('#edit_email').val(lead.email);
+              $('#edit_colegio_procedencia').val(lead.colegio_procedencia);
+              $('#edit_motivo_cambio').val(lead.motivo_cambio);
+              $('#edit_prioridad').val(lead.prioridad);
+              $('#edit_puntaje_interes').val(lead.puntaje_interes);
+              $('#edit_proxima_accion_fecha').val(lead.proxima_accion_fecha);
+              $('#edit_proxima_accion_descripcion').val(lead.proxima_accion_descripcion);
+              $('#edit_observaciones').val(lead.observaciones);
+              $('#edit_utm_source').val(lead.utm_source);
+              $('#edit_utm_medium').val(lead.utm_medium);
+              $('#edit_utm_campaign').val(lead.utm_campaign);
+              $('#edit_fecha_conversion').val(lead.fecha_conversion);
+              $('#edit_codigo_lead').val(lead.codigo_lead);
+
+              // Cargar opciones en los selects
+              if (lead.opciones) {
+                  // Canales
+                  let canalSelect = $('#edit_canal_captacion_id');
+                  canalSelect.empty().append('<option value="">Seleccionar canal</option>');
+                  lead.opciones.canales.forEach(function(canal) {
+                      canalSelect.append(`<option value="${canal.id}" ${canal.id == lead.canal_captacion_id ? 'selected' : ''}>${canal.nombre}</option>`);
+                  });
+
+                  // Estados
+                  let estadoSelect = $('#edit_estado_lead_id');
+                  estadoSelect.empty();
+                  lead.opciones.estados.forEach(function(estado) {
+                      estadoSelect.append(`<option value="${estado.id}" ${estado.id == lead.estado_lead_id ? 'selected' : ''}>${estado.nombre}</option>`);
+                  });
+
+                  // Grados
+                  let gradoSelect = $('#edit_grado_interes_id');
+                  gradoSelect.empty().append('<option value="">Seleccionar grado</option>');
+                  lead.opciones.grados.forEach(function(grado) {
+                      gradoSelect.append(`<option value="${grado.id}" ${grado.id == lead.grado_interes_id ? 'selected' : ''}>${grado.nivel_nombre} - ${grado.nombre}</option>`);
+                  });
+
+                  // Usuarios
+                  let usuarioSelect = $('#edit_responsable_id');
+                  usuarioSelect.empty().append('<option value="">Sin asignar</option>');
+                  lead.opciones.usuarios.forEach(function(usuario) {
+                      usuarioSelect.append(`<option value="${usuario.id}" ${usuario.id == lead.responsable_id ? 'selected' : ''}>${usuario.nombre_completo}</option>`);
+                  });
+              }
+
+              $('#modalEditar').modal('show');
             }
 
             // Función para verificar duplicados individual
             function verificarDuplicadosIndividual(id, email, telefono) {
               $.ajax({
-                url: 'actions/verificar_duplicados.php',
+                url: 'acciones/leads/verificar_duplicados.php',
                 method: 'POST',
                 data: { 
                   lead_id: id, 

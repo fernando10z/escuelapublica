@@ -413,7 +413,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                 </div>
                 <div class="d-flex gap-2">
                   <button type="button" class="btn btn-outline-danger btn-sm" onclick="exportarEstadosPDF()">
-                    <i class="ti ti-file-type-pdf me-1"></i>
+                    <i class="fas fa-file-pdf me-1"></i>
                     Exportar PDF
                   </button>
                   <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalNuevoEstado">
@@ -624,6 +624,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     <script src="assets/js/fonts/custom-font.js"></script>
     <script src="assets/js/pcoded.js"></script>
     <script src="assets/js/plugins/feather.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <script>
       layout_change("light");
@@ -789,9 +790,9 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             // Función para cargar datos del estado
             function cargarDatosEstado(id, accion) {
               $.ajax({
-                url: 'actions/obtener_estado.php',
-                method: 'POST',
-                data: { id: id, accion: accion },
+                url: 'acciones/clasificacion_leads/obtener_estado.php',
+                  method: 'POST',
+                  data: { id: id, accion: accion },
                 dataType: 'json',
                 success: function(response) {
                   if (response.success) {
@@ -819,7 +820,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             // Función para cargar historial de un estado específico
             function cargarHistorialEstado(estadoId) {
               $.ajax({
-                url: 'actions/obtener_historial_estado.php',
+                url: 'acciones/clasificacion_leads/obtener_historial_estado.php',
                 method: 'POST',
                 data: { estado_id: estadoId },
                 dataType: 'json',
@@ -845,7 +846,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             // Función para cargar configuración de flujo
             function cargarConfiguracionFlujo(estadoId) {
               $.ajax({
-                url: 'actions/obtener_flujo_estado.php',
+                url: 'acciones/clasificacion_leads/obtener_flujo_estado.php',
                 method: 'POST',
                 data: { estado_id: estadoId },
                 dataType: 'json',

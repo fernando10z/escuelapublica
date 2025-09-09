@@ -236,7 +236,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                 </div>
                 <div>
                   <button type="button" class="btn btn-outline-danger btn-sm" onclick="exportarLogsPDF()">
-                    <i class="ti ti-file-type-pdf me-1"></i>
+                   <i class="fas fa-file-pdf me-1"></i>
                     Generar PDF
                   </button>
                 </div>

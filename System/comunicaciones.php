@@ -470,54 +470,18 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                     <i class="ti ti-truck me-1"></i>
                     Estado Entrega
                   </button>
-                  <button type="button" class="btn btn-outline-success btn-sm" onclick="exportarHistorial()">
-                    <i class="fas fa-file-excel me-1"></i>
-                    Exportar Excel
-                  </button>
                   <button type="button" class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#modalConsultarContacto">
                     <i class="fas fa-user me-1"></i>
                     Consultar por Contacto
                   </button>
-                  <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalGenerarReporte">
-                    <i class="ti ti-file-report me-1"></i>
-                    Generar Reporte
+                  <button type="button" class="btn btn-outline-danger btn-sm" onclick="exportarLogsPDF()">
+                    <i class="fas fa-file-pdf me-1"></i>
+                    Generar PDF
                   </button>
                 </div>
               </div>
               
               <div class="card-body">
-                <!-- Métricas Adicionales -->
-                <?php if($result->num_rows > 0): ?>
-                <div class="metricas-panel">
-                  <h6 class="mb-3">Métricas del Período Filtrado</h6>
-                  <div class="row">
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>Emails:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['total_emails']); ?></span>
-                      </div>
-                    </div>
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>WhatsApp:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['total_whatsapp']); ?></span>
-                      </div>
-                    </div>
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>SMS:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['total_sms']); ?></span>
-                      </div>
-                    </div>
-                    <div class="col-md-3">
-                      <div class="metrica-item">
-                        <span>Esta Semana:</span>
-                        <span class="metrica-valor"><?php echo number_format($stats['mensajes_semana']); ?></span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <?php endif; ?>
 
                 <!-- Tabla de historial -->
                 <div class="dt-responsive table-responsive">
@@ -668,7 +632,6 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     <?php include 'modals/comunicaciones/modal_consultar_contacto.php'; ?>
     <?php include 'modals/comunicaciones/modal_filtrar_fechas.php'; ?>
     <?php include 'modals/comunicaciones/modal_estado_entrega.php'; ?>
-    <?php include 'modals/comunicaciones/modal_generar_reporte.php'; ?>
 
     <?php include 'includes/footer.php'; ?>
     
@@ -752,34 +715,6 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                   }
                 });
               }
-            });
-
-            // Función para exportar historial a Excel
-            window.exportarHistorial = function() {
-              var filtros = {
-                fecha_inicio: '<?php echo $fecha_inicio; ?>',
-                fecha_fin: '<?php echo $fecha_fin; ?>',
-                tipo_mensaje: '<?php echo $tipo_mensaje; ?>',
-                estado_mensaje: '<?php echo $estado_mensaje; ?>',
-                contacto_filtro: '<?php echo $contacto_filtro; ?>'
-              };
-              
-              var url = 'exports/historial_comunicaciones_excel.php?' + $.param(filtros);
-              window.open(url, '_blank');
-            };
-
-            // Manejar click en botón ver mensaje completo
-            $(document).on('click', '.btn-ver-completo', function() {
-                var id = $(this).data('id');
-                cargarMensajeCompleto(id);
-            });
-
-            // Manejar click en botón reenviar
-            $(document).on('click', '.btn-reenviar', function() {
-                var id = $(this).data('id');
-                if (confirm('¿Está seguro de que desea reenviar este mensaje?')) {
-                    reenviarMensaje(id);
-                }
             });
 
             // Función para cargar mensaje completo
@@ -872,6 +807,46 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
               // Mostrar modal
               $('#modalMensajeCompleto').modal('show');
             }
+
+            window.exportarLogsPDF = function() {
+              var tabla = $('#logs-table').DataTable();
+              var datosVisibles = [];
+              
+              // Obtener solo las filas visibles/filtradas
+              tabla.rows({ filter: 'applied' }).every(function(rowIdx, tableLoop, rowLoop) {
+                var data = this.data();
+                var row = [];
+                
+                // Extraer texto limpio de cada celda (sin HTML)
+                for (var i = 0; i < data.length; i++) {
+                  var cellContent = $(data[i]).text() || data[i];
+                  row.push(cellContent);
+                }
+                datosVisibles.push(row);
+              });
+              
+              if (datosVisibles.length === 0) {
+                alert('No hay registros visibles para generar el reporte PDF.');
+                return;
+              }
+              
+              // Crear formulario para enviar datos por POST
+              var form = document.createElement('form');
+              form.method = 'POST';
+              form.action = 'reports/generar_pdf_apoderados.php';
+              form.target = '_blank';
+              
+              var input = document.createElement('input');
+              input.type = 'hidden';
+              input.name = 'filteredData';
+              input.value = JSON.stringify(datosVisibles);
+              
+              form.appendChild(input);
+              document.body.appendChild(form);
+              form.submit();
+              document.body.removeChild(form);
+            };
+
 
             // Tooltip para elementos con title
             $('[title]').tooltip();

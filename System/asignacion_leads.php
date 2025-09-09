@@ -803,7 +803,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             // Función para cargar carga de trabajo detallada
             function cargarCargaTrabajo(usuarioId) {
               $.ajax({
-                url: 'actions/obtener_carga_trabajo.php',
+                url: 'acciones/asignacion_leads/obtener_carga_trabajo.php',
                 method: 'POST',
                 data: { usuario_id: usuarioId },
                 dataType: 'json',
@@ -823,7 +823,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             // Función para cargar leads sin asignar
             function cargarLeadsSinAsignar() {
               $.ajax({
-                url: 'actions/obtener_leads_sin_asignar.php',
+                url: 'acciones/asignacion_leads/obtener_leads_sin_asignar.php',
                 method: 'GET',
                 dataType: 'json',
                 success: function(response) {
@@ -844,7 +844,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             // Función para cargar leads de un usuario
             function cargarLeadsUsuario(usuarioId) {
               $.ajax({
-                url: 'actions/obtener_leads_usuario.php',
+                url: 'acciones/asignacion_leads/obtener_leads_usuario.php',
                 method: 'POST',
                 data: { usuario_id: usuarioId },
                 dataType: 'json',
@@ -866,7 +866,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
             // Función para cargar usuarios destino
             function cargarUsuariosDestino(usuarioOrigenId) {
               $.ajax({
-                url: 'actions/obtener_usuarios_destino.php',
+                url: 'acciones/asignacion_leads/obtener_usuarios_destino.php',
                 method: 'POST',
                 data: { usuario_origen_id: usuarioOrigenId },
                 dataType: 'json',
