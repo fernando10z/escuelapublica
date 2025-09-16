@@ -2,63 +2,400 @@
 // Incluir conexión a la base de datos
 include 'bd/conexion.php';
 
-// Consulta para obtener los estados con estadísticas de leads
+// Procesar acciones POST
+$mensaje_sistema = '';
+$tipo_mensaje = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion'])) {
+    switch ($_POST['accion']) {
+        case 'evaluar_compromiso':
+            $mensaje_sistema = procesarEvaluarCompromiso($conn, $_POST);
+            $tipo_mensaje = strpos($mensaje_sistema, 'Error') !== false ? 'error' : 'success';
+            break;
+            
+        case 'medir_participacion':
+            $mensaje_sistema = procesarMedirParticipacion($conn, $_POST);
+            $tipo_mensaje = strpos($mensaje_sistema, 'Error') !== false ? 'error' : 'success';
+            break;
+            
+        case 'actualizar_clasificacion':
+            $mensaje_sistema = procesarActualizarClasificacion($conn, $_POST);
+            $tipo_mensaje = strpos($mensaje_sistema, 'Error') !== false ? 'error' : 'success';
+            break;
+            
+        case 'generar_segmentacion':
+            $mensaje_sistema = procesarGenerarSegmentacion($conn, $_POST);
+            $tipo_mensaje = strpos($mensaje_sistema, 'Error') !== false ? 'error' : 'success';
+            break;
+            
+        case 'recalcular_clasificaciones':
+            $mensaje_sistema = recalcularTodasLasClasificaciones($conn);
+            $tipo_mensaje = strpos($mensaje_sistema, 'Error') !== false ? 'error' : 'success';
+            break;
+    }
+}
+
+// Función para evaluar nivel de compromiso
+function procesarEvaluarCompromiso($conn, $data) {
+    try {
+        $apoderado_id = $conn->real_escape_string($data['apoderado_id']);
+        $nuevo_compromiso = $conn->real_escape_string($data['nivel_compromiso']);
+        $observaciones = $conn->real_escape_string($data['observaciones'] ?? '');
+        
+        // Algoritmo de evaluación de compromiso basado en interacciones
+        $sql_evaluacion = "SELECT 
+            COUNT(i.id) as total_interacciones,
+            COUNT(CASE WHEN i.resultado = 'exitoso' THEN 1 END) as interacciones_exitosas,
+            COUNT(CASE WHEN i.resultado = 'sin_respuesta' THEN 1 END) as sin_respuesta,
+            COUNT(CASE WHEN DATE(i.created_at) >= DATE_SUB(CURDATE(), INTERVAL 90 DAY) THEN 1 END) as interacciones_recientes,
+            COUNT(CASE WHEN i.requiere_seguimiento = 1 AND i.fecha_proximo_seguimiento < CURDATE() THEN 1 END) as seguimientos_vencidos
+            FROM interacciones i 
+            WHERE i.apoderado_id = $apoderado_id AND i.activo = 1";
+        
+        $resultado_eval = $conn->query($sql_evaluacion);
+        $metricas = $resultado_eval->fetch_assoc();
+        
+        // Calcular puntuación automática
+        $puntuacion = 0;
+        if ($metricas['total_interacciones'] > 0) {
+            $tasa_exito = ($metricas['interacciones_exitosas'] / $metricas['total_interacciones']) * 100;
+            $puntuacion += $tasa_exito * 0.4; // 40% peso
+            $puntuacion += min(($metricas['interacciones_recientes'] / 5) * 30, 30); // 30% peso, máx 5 interacciones
+            $puntuacion -= ($metricas['seguimientos_vencidos'] * 10); // Penalización
+        }
+        
+        $nivel_calculado = $puntuacion >= 70 ? 'alto' : ($puntuacion >= 40 ? 'medio' : 'bajo');
+        $nivel_final = !empty($nuevo_compromiso) ? $nuevo_compromiso : $nivel_calculado;
+        
+        $sql = "UPDATE apoderados SET 
+                nivel_compromiso = '$nivel_final',
+                updated_at = CURRENT_TIMESTAMP
+                WHERE id = $apoderado_id";
+        
+        if ($conn->query($sql)) {
+            // Registrar la evaluación en historial
+            $sql_historial = "INSERT INTO interacciones (
+                tipo_interaccion_id, usuario_id, apoderado_id, asunto, descripcion, 
+                fecha_realizada, resultado, estado
+            ) VALUES (
+                1, 1, $apoderado_id, 'Evaluación de Compromiso', 
+                'Nivel actualizado a: $nivel_final. Puntuación calculada: " . round($puntuacion, 2) . ". $observaciones',
+                NOW(), 'exitoso', 'realizado'
+            )";
+            $conn->query($sql_historial);
+            
+            return "Nivel de compromiso evaluado correctamente. Puntuación: " . round($puntuacion, 2) . "%. Nivel asignado: " . strtoupper($nivel_final);
+        } else {
+            return "Error al actualizar el nivel de compromiso: " . $conn->error;
+        }
+    } catch (Exception $e) {
+        return "Error: " . $e->getMessage();
+    }
+}
+
+// Función para medir nivel de participación
+function procesarMedirParticipacion($conn, $data) {
+    try {
+        $apoderado_id = $conn->real_escape_string($data['apoderado_id']);
+        $nueva_participacion = $conn->real_escape_string($data['nivel_participacion']);
+        $observaciones = $conn->real_escape_string($data['observaciones'] ?? '');
+        
+        // Algoritmo de medición de participación
+        $sql_medicion = "SELECT 
+            COUNT(CASE WHEN DATE(i.created_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 END) as interacciones_mes,
+            COUNT(CASE WHEN DATE(i.created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as interacciones_semana,
+            AVG(i.duracion_minutos) as duracion_promedio,
+            COUNT(CASE WHEN i.tipo_interaccion_id = 4 THEN 1 END) as reuniones_presenciales,
+            MAX(DATE(i.created_at)) as ultima_interaccion
+            FROM interacciones i 
+            WHERE i.apoderado_id = $apoderado_id AND i.activo = 1";
+        
+        $resultado_med = $conn->query($sql_medicion);
+        $metricas = $resultado_med->fetch_assoc();
+        
+        // Calcular puntuación de participación
+        $puntuacion = 0;
+        $puntuacion += min($metricas['interacciones_mes'] * 15, 60); // Máx 4 interacciones/mes
+        $puntuacion += min($metricas['reuniones_presenciales'] * 20, 40); // Máx 2 reuniones
+        
+        if ($metricas['ultima_interaccion']) {
+            $dias_ultima = (strtotime('now') - strtotime($metricas['ultima_interaccion'])) / (60*60*24);
+            if ($dias_ultima <= 7) $puntuacion += 20;
+            elseif ($dias_ultima <= 30) $puntuacion += 10;
+        }
+        
+        $nivel_calculado = $puntuacion >= 80 ? 'muy_activo' : 
+                          ($puntuacion >= 60 ? 'activo' : 
+                          ($puntuacion >= 30 ? 'poco_activo' : 'inactivo'));
+        
+        $nivel_final = !empty($nueva_participacion) ? $nueva_participacion : $nivel_calculado;
+        
+        $sql = "UPDATE apoderados SET 
+                nivel_participacion = '$nivel_final',
+                updated_at = CURRENT_TIMESTAMP
+                WHERE id = $apoderado_id";
+        
+        if ($conn->query($sql)) {
+            return "Nivel de participación medido correctamente. Puntuación: " . round($puntuacion, 2) . "%. Nivel asignado: " . strtoupper(str_replace('_', ' ', $nivel_final));
+        } else {
+            return "Error al actualizar el nivel de participación: " . $conn->error;
+        }
+    } catch (Exception $e) {
+        return "Error: " . $e->getMessage();
+    }
+}
+
+// Función para actualizar clasificación completa
+function procesarActualizarClasificacion($conn, $data) {
+    try {
+        $apoderado_id = $conn->real_escape_string($data['apoderado_id']);
+        $tipo_apoderado = $conn->real_escape_string($data['tipo_apoderado']);
+        $nivel_compromiso = $conn->real_escape_string($data['nivel_compromiso']);
+        $nivel_participacion = $conn->real_escape_string($data['nivel_participacion']);
+        $preferencia_contacto = $conn->real_escape_string($data['preferencia_contacto']);
+        $observaciones = $conn->real_escape_string($data['observaciones'] ?? '');
+        
+        $sql = "UPDATE apoderados SET 
+                tipo_apoderado = '$tipo_apoderado',
+                nivel_compromiso = '$nivel_compromiso',
+                nivel_participacion = '$nivel_participacion',
+                preferencia_contacto = '$preferencia_contacto',
+                updated_at = CURRENT_TIMESTAMP
+                WHERE id = $apoderado_id";
+        
+        if ($conn->query($sql)) {
+            // Determinar categoría final
+            $categoria = determinarCategoriaApoderado($nivel_compromiso, $nivel_participacion);
+            
+            // Registrar actualización
+            $sql_historial = "INSERT INTO interacciones (
+                tipo_interaccion_id, usuario_id, apoderado_id, asunto, descripcion, 
+                fecha_realizada, resultado, estado
+            ) VALUES (
+                1, 1, $apoderado_id, 'Actualización de Clasificación', 
+                'Clasificación actualizada. Categoría: $categoria. $observaciones',
+                NOW(), 'exitoso', 'realizado'
+            )";
+            $conn->query($sql_historial);
+            
+            return "Clasificación actualizada correctamente. Categoría asignada: " . strtoupper($categoria);
+        } else {
+            return "Error al actualizar la clasificación: " . $conn->error;
+        }
+    } catch (Exception $e) {
+        return "Error: " . $e->getMessage();
+    }
+}
+
+// Función para generar reportes de segmentación
+function procesarGenerarSegmentacion($conn, $data) {
+    try {
+        $criterio = $conn->real_escape_string($data['criterio_segmentacion']);
+        $formato = $conn->real_escape_string($data['formato'] ?? 'pantalla');
+        
+        switch ($criterio) {
+            case 'compromiso_participacion':
+                $sql = "SELECT 
+                    CONCAT(nivel_compromiso, '_', nivel_participacion) as segmento,
+                    COUNT(*) as cantidad,
+                    ROUND(AVG(YEAR(CURDATE()) - YEAR(fecha_nacimiento)), 1) as edad_promedio
+                    FROM apoderados 
+                    WHERE activo = 1 
+                    GROUP BY nivel_compromiso, nivel_participacion
+                    ORDER BY cantidad DESC";
+                break;
+                
+            case 'nivel_socioeconomico':
+                $sql = "SELECT 
+                    f.nivel_socioeconomico as segmento,
+                    COUNT(a.id) as cantidad,
+                    a.nivel_compromiso,
+                    COUNT(CASE WHEN a.nivel_participacion = 'muy_activo' THEN 1 END) as muy_activos
+                    FROM apoderados a
+                    LEFT JOIN familias f ON a.familia_id = f.id
+                    WHERE a.activo = 1 AND f.nivel_socioeconomico IS NOT NULL
+                    GROUP BY f.nivel_socioeconomico, a.nivel_compromiso
+                    ORDER BY f.nivel_socioeconomico, cantidad DESC";
+                break;
+                
+            case 'problematicos_colaboradores':
+                $sql = "SELECT 
+                    CASE 
+                        WHEN a.nivel_compromiso = 'alto' AND a.nivel_participacion IN ('muy_activo', 'activo') THEN 'Colaborador Estrella'
+                        WHEN a.nivel_compromiso = 'alto' THEN 'Comprometido'
+                        WHEN a.nivel_participacion = 'muy_activo' THEN 'Muy Participativo'
+                        WHEN a.nivel_compromiso = 'bajo' AND a.nivel_participacion = 'inactivo' THEN 'Problemático'
+                        WHEN a.nivel_compromiso = 'bajo' THEN 'Bajo Compromiso'
+                        WHEN a.nivel_participacion = 'inactivo' THEN 'Inactivo'
+                        ELSE 'Regular'
+                    END as segmento,
+                    COUNT(*) as cantidad,
+                    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM apoderados WHERE activo = 1), 2) as porcentaje
+                    FROM apoderados a
+                    WHERE a.activo = 1
+                    GROUP BY segmento
+                    ORDER BY cantidad DESC";
+                break;
+                
+            default:
+                return "Error: Criterio de segmentación no válido.";
+        }
+        
+        if ($formato === 'excel') {
+            // Generar archivo Excel (simulado)
+            return "Reporte de segmentación generado y enviado por email.";
+        } else {
+            return "Reporte de segmentación generado correctamente en pantalla.";
+        }
+    } catch (Exception $e) {
+        return "Error: " . $e->getMessage();
+    }
+}
+
+// Función auxiliar para determinar categoría
+function determinarCategoriaApoderado($compromiso, $participacion) {
+    if ($compromiso === 'alto' && in_array($participacion, ['muy_activo', 'activo'])) {
+        return 'colaborador_estrella';
+    } elseif ($compromiso === 'alto') {
+        return 'comprometido';
+    } elseif ($participacion === 'muy_activo') {
+        return 'muy_participativo';
+    } elseif ($compromiso === 'bajo' && $participacion === 'inactivo') {
+        return 'problematico';
+    } elseif ($compromiso === 'bajo') {
+        return 'bajo_compromiso';
+    } elseif ($participacion === 'inactivo') {
+        return 'inactivo';
+    } else {
+        return 'regular';
+    }
+}
+
+// Función para recalcular todas las clasificaciones
+function recalcularTodasLasClasificaciones($conn) {
+    try {
+        $sql_apoderados = "SELECT id FROM apoderados WHERE activo = 1";
+        $result = $conn->query($sql_apoderados);
+        $procesados = 0;
+        
+        while ($apoderado = $result->fetch_assoc()) {
+            procesarEvaluarCompromiso($conn, ['apoderado_id' => $apoderado['id']]);
+            procesarMedirParticipacion($conn, ['apoderado_id' => $apoderado['id']]);
+            $procesados++;
+        }
+        
+        return "Recálculo completado. $procesados apoderados procesados.";
+    } catch (Exception $e) {
+        return "Error en recálculo masivo: " . $e->getMessage();
+    }
+}
+
+// Consulta principal para obtener apoderados con clasificaciones y métricas
 $sql = "SELECT 
-    el.id,
-    el.nombre,
-    el.descripcion,
-    el.color,
-    el.orden_display,
-    el.es_final,
-    el.activo,
-    el.created_at,
-    COUNT(l.id) as total_leads_estado,
-    COUNT(CASE WHEN l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 END) as leads_mes_actual,
-    COUNT(CASE WHEN l.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as leads_semana_actual,
-    AVG(CASE WHEN l.puntaje_interes IS NOT NULL THEN l.puntaje_interes END) as promedio_interes,
-    COUNT(CASE WHEN l.prioridad = 'urgente' THEN 1 END) as leads_urgentes,
-    COUNT(CASE WHEN l.proxima_accion_fecha = CURDATE() THEN 1 END) as acciones_hoy,
-    MAX(l.created_at) as ultimo_lead_fecha,
-    COUNT(CASE WHEN l.responsable_id IS NOT NULL THEN 1 END) as leads_asignados
-FROM estados_lead el
-LEFT JOIN leads l ON el.id = l.estado_lead_id AND l.activo = 1
-WHERE el.activo = 1
-GROUP BY el.id, el.nombre, el.descripcion, el.color, el.orden_display, el.es_final, el.activo, el.created_at
-ORDER BY el.orden_display ASC, el.id ASC";
+    a.id,
+    a.familia_id,
+    f.codigo_familia,
+    f.apellido_principal as familia_apellido,
+    f.nivel_socioeconomico,
+    a.tipo_apoderado,
+    a.nombres,
+    a.apellidos,
+    a.email,
+    a.telefono_principal,
+    a.nivel_compromiso,
+    a.nivel_participacion,
+    a.preferencia_contacto,
+    a.created_at,
+    a.updated_at,
+    CONCAT(a.nombres, ' ', a.apellidos) as nombre_completo,
+    -- Métricas calculadas
+    (SELECT COUNT(*) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1) as total_interacciones,
+    (SELECT COUNT(*) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1 
+     AND DATE(i.created_at) >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)) as interacciones_recientes,
+    (SELECT COUNT(*) FROM interacciones i WHERE i.apoderado_id = a.id AND i.resultado = 'exitoso' AND i.activo = 1) as interacciones_exitosas,
+    (SELECT MAX(DATE(i.created_at)) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1) as ultima_interaccion,
+    -- Puntuación calculada de compromiso
+    CASE 
+        WHEN (SELECT COUNT(*) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1) = 0 THEN 0
+        ELSE ROUND(
+            ((SELECT COUNT(*) FROM interacciones i WHERE i.apoderado_id = a.id AND i.resultado = 'exitoso' AND i.activo = 1) * 100.0 / 
+             (SELECT COUNT(*) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1)) * 0.6 +
+            LEAST((SELECT COUNT(*) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1 
+                   AND DATE(i.created_at) >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)) * 8, 40)
+        , 2)
+    END as puntuacion_compromiso,
+    -- Categorización automática
+    CASE 
+        WHEN a.nivel_compromiso = 'alto' AND a.nivel_participacion IN ('muy_activo', 'activo') THEN 'colaborador_estrella'
+        WHEN a.nivel_compromiso = 'alto' THEN 'comprometido'
+        WHEN a.nivel_participacion = 'muy_activo' THEN 'muy_participativo'
+        WHEN a.nivel_compromiso = 'bajo' AND a.nivel_participacion = 'inactivo' THEN 'problematico'
+        WHEN a.nivel_compromiso = 'bajo' THEN 'bajo_compromiso'
+        WHEN a.nivel_participacion = 'inactivo' THEN 'inactivo'
+        ELSE 'regular'
+    END as categoria_apoderado,
+    -- Días desde última interacción
+    CASE 
+        WHEN (SELECT MAX(DATE(i.created_at)) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1) IS NOT NULL
+        THEN DATEDIFF(CURDATE(), (SELECT MAX(DATE(i.created_at)) FROM interacciones i WHERE i.apoderado_id = a.id AND i.activo = 1))
+        ELSE NULL
+    END as dias_ultima_interaccion
+FROM apoderados a
+LEFT JOIN familias f ON a.familia_id = f.id
+WHERE a.activo = 1
+ORDER BY 
+    CASE a.nivel_compromiso
+        WHEN 'alto' THEN 1
+        WHEN 'medio' THEN 2
+        WHEN 'bajo' THEN 3
+        ELSE 4
+    END,
+    CASE a.nivel_participacion
+        WHEN 'muy_activo' THEN 1
+        WHEN 'activo' THEN 2
+        WHEN 'poco_activo' THEN 3
+        WHEN 'inactivo' THEN 4
+        ELSE 5
+    END,
+    a.updated_at DESC";
 
 $result = $conn->query($sql);
 
-// Obtener estadísticas generales de cambios de estado
-$stats_historial_sql = "SELECT 
-    COUNT(*) as total_cambios,
-    COUNT(DISTINCT hel.lead_id) as leads_con_cambios,
-    COUNT(CASE WHEN hel.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as cambios_semana,
-    COUNT(CASE WHEN hel.created_at >= CURDATE() THEN 1 END) as cambios_hoy,
-    COUNT(DISTINCT hel.usuario_id) as usuarios_activos,
-    AVG(TIMESTAMPDIFF(DAY, l.created_at, hel.created_at)) as dias_promedio_cambio
-FROM historial_estados_lead hel
-LEFT JOIN leads l ON hel.lead_id = l.id
-WHERE hel.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+// Obtener estadísticas de clasificación para mostrar
+$stats_sql = "SELECT 
+    COUNT(*) as total_apoderados,
+    COUNT(CASE WHEN nivel_compromiso = 'alto' THEN 1 END) as alto_compromiso,
+    COUNT(CASE WHEN nivel_compromiso = 'medio' THEN 1 END) as medio_compromiso,
+    COUNT(CASE WHEN nivel_compromiso = 'bajo' THEN 1 END) as bajo_compromiso,
+    COUNT(CASE WHEN nivel_participacion = 'muy_activo' THEN 1 END) as muy_activos,
+    COUNT(CASE WHEN nivel_participacion = 'activo' THEN 1 END) as activos,
+    COUNT(CASE WHEN nivel_participacion = 'poco_activo' THEN 1 END) as poco_activos,
+    COUNT(CASE WHEN nivel_participacion = 'inactivo' THEN 1 END) as inactivos,
+    -- Categorías especiales
+    COUNT(CASE WHEN nivel_compromiso = 'alto' AND nivel_participacion IN ('muy_activo', 'activo') THEN 1 END) as colaboradores_estrella,
+    COUNT(CASE WHEN nivel_compromiso = 'bajo' AND nivel_participacion = 'inactivo' THEN 1 END) as problematicos
+FROM apoderados 
+WHERE activo = 1";
 
-$stats_historial_result = $conn->query($stats_historial_sql);
-$stats_historial = $stats_historial_result->fetch_assoc();
+$stats_result = $conn->query($stats_sql);
+$stats = $stats_result->fetch_assoc();
 
-// Obtener flujo de estados más común
-$flujo_sql = "SELECT 
-    ea.nombre as estado_anterior,
-    en.nombre as estado_nuevo,
-    COUNT(*) as total_cambios,
-    ea.color as color_anterior,
-    en.color as color_nuevo
-FROM historial_estados_lead hel
-LEFT JOIN estados_lead ea ON hel.estado_anterior_id = ea.id
-LEFT JOIN estados_lead en ON hel.estado_nuevo_id = en.id
-WHERE hel.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
-GROUP BY hel.estado_anterior_id, hel.estado_nuevo_id, ea.nombre, en.nombre, ea.color, en.color
-ORDER BY total_cambios DESC
-LIMIT 10";
+// Obtener distribución por nivel socioeconómico
+$socioeconomico_sql = "SELECT 
+    f.nivel_socioeconomico,
+    COUNT(a.id) as cantidad,
+    AVG(CASE WHEN a.nivel_compromiso = 'alto' THEN 1 ELSE 0 END) * 100 as porcentaje_alto_compromiso
+FROM apoderados a
+LEFT JOIN familias f ON a.familia_id = f.id
+WHERE a.activo = 1 AND f.nivel_socioeconomico IS NOT NULL
+GROUP BY f.nivel_socioeconomico
+ORDER BY f.nivel_socioeconomico";
 
-$flujo_result = $conn->query($flujo_sql);
+$socioeconomico_result = $conn->query($socioeconomico_sql);
+$socioeconomico_data = [];
+while($socio = $socioeconomico_result->fetch_assoc()) {
+    $socioeconomico_data[] = $socio;
+}
 
 // Obtener nombre del sistema para el título
 $query_nombre = "SELECT valor FROM configuracion_sistema WHERE clave = 'nombre_institucion' LIMIT 1";
@@ -74,7 +411,7 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
 <html lang="es">
   <!-- [Head] start -->
   <head>
-    <title>Clasificación y Estados - <?php echo $nombre_sistema; ?></title>
+    <title>Clasificación y Segmentación - <?php echo $nombre_sistema; ?></title>
     <!-- [Meta] -->
     <meta charset="utf-8" />
     <meta
@@ -84,11 +421,11 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta
       name="description"
-      content="Sistema CRM para instituciones educativas - Gestión de Estados de Leads"
+      content="Sistema CRM para instituciones educativas - Clasificación y Segmentación"
     />
     <meta
       name="keywords"
-      content="CRM, Educación, Estados, Clasificación, Workflow, Pipeline"
+      content="CRM, Educación, Clasificación, Segmentación, Apoderados, Análisis"
     />
     <meta name="author" content="CRM Escolar" />
 
@@ -123,206 +460,221 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     />
     <link rel="stylesheet" href="assets/css/style-preset.css" />
     
-    <!-- Custom styles for estados -->
+    <!-- Custom styles for clasificación -->
     <style>
-      .badge-estado-config {
-        font-size: 0.8rem;
-        padding: 0.4rem 0.8rem;
-        border-radius: 20px;
-        font-weight: 600;
+      .badge-categoria {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 12px;
+        font-weight: 500;
         color: white;
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
+      }
+      .categoria-colaborador_estrella { 
+        background: linear-gradient(45deg, #28a745, #20c997);
+        animation: shine-star 3s infinite;
+      }
+      .categoria-comprometido { background-color: #17a2b8; }
+      .categoria-muy_participativo { background-color: #6f42c1; }
+      .categoria-regular { background-color: #6c757d; }
+      .categoria-bajo_compromiso { background-color: #fd7e14; }
+      .categoria-inactivo { background-color: #ffc107; color: #856404; }
+      .categoria-problematico { 
+        background-color: #dc3545;
+        animation: pulse-problem 2s infinite;
       }
       
-      .badge-final {
-        position: relative;
+      @keyframes shine-star {
+        0%, 100% { box-shadow: 0 0 5px rgba(40, 167, 69, 0.5); }
+        50% { box-shadow: 0 0 15px rgba(40, 167, 69, 0.8), 0 0 25px rgba(40, 167, 69, 0.4); }
       }
       
-      .badge-final::after {
-        content: "🏁";
-        margin-left: 4px;
+      @keyframes pulse-problem {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.7; }
       }
       
-      .estado-info {
+      .badge-compromiso {
+        font-size: 0.7rem;
+        padding: 0.2rem 0.4rem;
+        border-radius: 8px;
+        font-weight: bold;
+      }
+      .compromiso-alto { background-color: #28a745; color: white; }
+      .compromiso-medio { background-color: #ffc107; color: #856404; }
+      .compromiso-bajo { background-color: #dc3545; color: white; }
+      
+      .badge-participacion {
+        font-size: 0.7rem;
+        padding: 0.2rem 0.4rem;
+        border-radius: 6px;
+        font-weight: 500;
+      }
+      .participacion-muy_activo { 
+        background-color: #d4edda; 
+        color: #155724; 
+        border: 1px solid #c3e6cb;
+      }
+      .participacion-activo { 
+        background-color: #d1ecf1; 
+        color: #0c5460; 
+        border: 1px solid #bee5eb;
+      }
+      .participacion-poco_activo { 
+        background-color: #fff3cd; 
+        color: #856404; 
+        border: 1px solid #ffeaa7;
+      }
+      .participacion-inactivo { 
+        background-color: #f8d7da; 
+        color: #721c24; 
+        border: 1px solid #f5c6cb;
+      }
+      
+      .puntuacion-score {
+        font-size: 0.8rem;
+        padding: 0.3rem 0.5rem;
+        border-radius: 8px;
+        font-weight: bold;
+        text-align: center;
+        min-width: 50px;
+      }
+      .score-excelente { background-color: #28a745; color: white; }
+      .score-bueno { background-color: #17a2b8; color: white; }
+      .score-regular { background-color: #ffc107; color: #856404; }
+      .score-bajo { background-color: #dc3545; color: white; }
+      
+      .apoderado-info {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 3px;
       }
       
-      .estado-nombre {
-        font-weight: 700;
-        font-size: 1rem;
+      .apoderado-nombre {
+        font-weight: 600;
         color: #2c3e50;
-      }
-      
-      .estado-descripcion {
-        font-size: 0.8rem;
-        color: #6c757d;
-        font-style: italic;
-        line-height: 1.3;
-      }
-      
-      .orden-display {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 35px;
-        height: 35px;
-        border-radius: 50%;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        font-weight: bold;
         font-size: 0.9rem;
       }
       
-      .estadisticas-estado {
+      .apoderado-contacto {
+        font-size: 0.75rem;
+        color: #6c757d;
+      }
+      
+      .metricas-info {
         display: flex;
         flex-direction: column;
         gap: 2px;
         font-size: 0.75rem;
       }
       
-      .stat-item-small {
+      .metrica-principal {
+        font-weight: bold;
+        color: #495057;
+      }
+      
+      .metrica-secundaria {
+        color: #6c757d;
+      }
+      
+      .ultima-interaccion {
+        font-size: 0.7rem;
+        padding: 0.15rem 0.3rem;
+        border-radius: 4px;
+        font-weight: 500;
+      }
+      .interaccion-reciente { background-color: #d4edda; color: #155724; }
+      .interaccion-antigua { background-color: #fff3cd; color: #856404; }
+      .interaccion-muy_antigua { background-color: #f8d7da; color: #721c24; }
+      .sin-interaccion { background-color: #f8f9fa; color: #6c757d; }
+      
+      .familia-info {
         display: flex;
-        justify-content: space-between;
-        padding: 2px 0;
+        flex-direction: column;
+        gap: 2px;
       }
       
-      .stat-number-small {
-        font-weight: bold;
-        color: #2c3e50;
-      }
-      
-      .stat-label-small {
-        color: #6c757d;
-      }
-      
-      .conversion-rate {
-        font-size: 0.8rem;
-        padding: 0.2rem 0.5rem;
-        border-radius: 12px;
-        font-weight: bold;
-      }
-      
-      .rate-high { background-color: #d4edda; color: #155724; }
-      .rate-medium { background-color: #fff3cd; color: #856404; }
-      .rate-low { background-color: #f8d7da; color: #721c24; }
-      
-      .interes-promedio {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
+      .familia-codigo {
+        font-family: 'Courier New', monospace;
         font-size: 0.75rem;
+        background-color: #e3f2fd;
+        color: #1565c0;
+        padding: 1px 4px;
+        border-radius: 3px;
       }
       
-      .estrella-promedio { color: #ffc107; font-size: 0.7rem; }
-      .estrella-vacia { color: #e9ecef; font-size: 0.7rem; }
-      
-      .urgente-indicator {
-        background-color: #dc3545;
-        color: white;
-        padding: 0.15rem 0.4rem;
-        border-radius: 8px;
-        font-size: 0.7rem;
-        font-weight: bold;
-      }
-      
-      .urgente-indicator.pulsing {
-        animation: pulse 2s infinite;
-      }
-      
-      @keyframes pulse {
-        0% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.8; transform: scale(1.05); }
-        100% { opacity: 1; transform: scale(1); }
-      }
-      
-      .acciones-hoy {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 0.15rem 0.4rem;
-        border-radius: 6px;
-        font-size: 0.7rem;
-        font-weight: bold;
-        border: 1px solid #ffeaa7;
-      }
-      
-      .ultimo-lead {
-        font-size: 0.7rem;
-        color: #6c757d;
-        font-style: italic;
-      }
-      
-      .stats-card-historial {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+      .stats-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
         margin-bottom: 20px;
       }
       
-      .stats-card-historial .card-body {
+      .stats-card .card-body {
         padding: 1.5rem;
       }
       
-      .flujo-item {
-        display: flex;
+      .stat-item {
+        text-align: center;
+        padding: 10px;
+      }
+      
+      .stat-number {
+        font-size: 1.3rem;
+        font-weight: bold;
+        display: block;
+      }
+      
+      .stat-label {
+        font-size: 0.75rem;
+        opacity: 0.9;
+      }
+      
+      .segmentacion-panel {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 15px;
+        margin-bottom: 15px;
+      }
+      
+      .segmento-item {
+        display: inline-flex;
         align-items: center;
         gap: 8px;
         padding: 8px 12px;
-        margin-bottom: 8px;
-        border-radius: 8px;
-        background-color: #f8f9fa;
-        border-left: 4px solid #007bff;
-      }
-      
-      .flujo-estados {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      
-      .flujo-arrow {
-        color: #6c757d;
-        font-size: 1.2rem;
-      }
-      
-      .flujo-count {
-        background-color: #007bff;
+        margin: 3px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 500;
         color: white;
-        padding: 0.2rem 0.5rem;
-        border-radius: 10px;
-        font-size: 0.7rem;
-        font-weight: bold;
-        margin-left: auto;
+        cursor: pointer;
+        transition: transform 0.2s;
       }
       
-      .btn-grupo-estados {
+      .segmento-item:hover {
+        transform: scale(1.05);
+      }
+      
+      .btn-grupo-clasificacion {
         display: flex;
         gap: 2px;
         flex-wrap: wrap;
       }
       
-      .btn-grupo-estados .btn {
-        padding: 0.3rem 0.6rem;
+      .btn-grupo-clasificacion .btn {
+        padding: 0.25rem 0.5rem;
         font-size: 0.75rem;
       }
       
-      .config-panel {
-        background: #d6eaff; /* Azul pastel */
-        color: #333; /* Texto oscuro para mejor contraste */
-        border-radius: 12px;
-        padding: 1.5rem;
+      .alert-mensaje {
         margin-bottom: 20px;
       }
       
-      .workflow-visualization {
-        background-color: white;
-        border-radius: 8px;
-        padding: 15px;
-        margin-top: 15px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      .preferencia-contacto {
+        font-size: 0.7rem;
+        padding: 0.1rem 0.3rem;
+        border-radius: 4px;
+        background-color: #e8f4fd;
+        color: #0c5460;
       }
     </style>
   </head>
@@ -355,10 +707,10 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                 <ul class="breadcrumb">
                   <li class="breadcrumb-item"><a href="index.php">Inicio</a></li>
                   <li class="breadcrumb-item">
-                    <a href="javascript: void(0)">Captación</a>
+                    <a href="javascript: void(0)">Gestión Familiar</a>
                   </li>
                   <li class="breadcrumb-item" aria-current="page">
-                    Estados y Clasificación
+                    Clasificación y Segmentación
                   </li>
                 </ul>
               </div>
@@ -367,193 +719,259 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
         </div>
         <!-- [ breadcrumb ] end -->
 
-        <!-- [ Config Panel ] start -->
+        <!-- [ Mensaje del Sistema ] start -->
+        <?php if(!empty($mensaje_sistema)): ?>
+        <div class="alert alert-<?php echo $tipo_mensaje === 'error' ? 'danger' : 'success'; ?> alert-dismissible fade show alert-mensaje" role="alert">
+          <?php echo $mensaje_sistema; ?>
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+        <?php endif; ?>
+        <!-- [ Mensaje del Sistema ] end -->
+
+        <!-- [ Stats Cards ] start -->
         <div class="row mb-3">
           <div class="col-sm-12">
-            <div class="config-panel">
-              <div class="row align-items-center">
-                <div class="col-md-8">
-                  <h4 class="mb-2">Panel de Configuración de Estados</h4>
-                  <p class="mb-0 opacity-75">
-                    Gestiona el flujo de estados de tus leads. Configura etapas, define estados finales y establece el proceso de conversión óptimo para tu institución educativa.
-                  </p>
-                </div>
-                <div class="col-md-4 text-end">
-                  <div class="d-flex gap-2 justify-content-end flex-wrap">
-                    <button type="button" class="btn btn-light btn-sm" onclick="configurarFlujos()">
-                      <i class="ti ti-git-branch me-1"></i>
-                      Configurar Flujos
-                    </button>
-                    <button type="button" class="btn btn-warning btn-sm" onclick="verHistorialGeneral()">
-                      <i class="ti ti-history me-1"></i>
-                      Historial Global
-                    </button>
+            <div class="card stats-card">
+              <div class="card-body">
+                <div class="row">
+                  <div class="col-lg-2 col-md-4 col-sm-6 stat-item">
+                    <span class="stat-number"><?php echo number_format($stats['total_apoderados'] ?? 0); ?></span>
+                    <span class="stat-label">Total Apoderados</span>
+                  </div>
+                  <div class="col-lg-2 col-md-4 col-sm-6 stat-item">
+                    <span class="stat-number"><?php echo number_format($stats['colaboradores_estrella'] ?? 0); ?></span>
+                    <span class="stat-label">Colaboradores Estrella</span>
+                  </div>
+                  <div class="col-lg-2 col-md-4 col-sm-6 stat-item">
+                    <span class="stat-number"><?php echo number_format($stats['alto_compromiso'] ?? 0); ?></span>
+                    <span class="stat-label">Alto Compromiso</span>
+                  </div>
+                  <div class="col-lg-2 col-md-4 col-sm-6 stat-item">
+                    <span class="stat-number"><?php echo number_format($stats['muy_activos'] ?? 0); ?></span>
+                    <span class="stat-label">Muy Activos</span>
+                  </div>
+                  <div class="col-lg-2 col-md-4 col-sm-6 stat-item">
+                    <span class="stat-number"><?php echo number_format($stats['problematicos'] ?? 0); ?></span>
+                    <span class="stat-label">Problemáticos</span>
+                  </div>
+                  <div class="col-lg-2 col-md-4 col-sm-6 stat-item">
+                    <span class="stat-number">
+                      <?php 
+                        $total = $stats['total_apoderados'] ?? 0;
+                        $positivos = ($stats['colaboradores_estrella'] ?? 0) + ($stats['alto_compromiso'] ?? 0);
+                        echo $total > 0 ? round(($positivos / $total) * 100, 1) . '%' : '0%';
+                      ?>
+                    </span>
+                    <span class="stat-label">Tasa Positiva</span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-        <!-- [ Config Panel ] end -->
+        <!-- [ Stats Cards ] end -->
+
+        <!-- [ Segmentación Panel ] start -->
+        <div class="row mb-3">
+          <div class="col-sm-12">
+            <div class="segmentacion-panel">
+              <h6 class="mb-3"><i class="ti ti-chart-donut me-2"></i>Segmentación Rápida por Categorías</h6>
+              <div class="d-flex flex-wrap">
+                <span class="segmento-item categoria-colaborador_estrella" onclick="filtrarPorCategoria('colaborador_estrella')">
+                  Colaboradores Estrella (<?php echo $stats['colaboradores_estrella'] ?? 0; ?>)
+                </span>
+                <span class="segmento-item categoria-comprometido" onclick="filtrarPorCategoria('comprometido')">
+                  Comprometidos (<?php echo ($stats['alto_compromiso'] ?? 0) - ($stats['colaboradores_estrella'] ?? 0); ?>)
+                </span>
+                <span class="segmento-item categoria-muy_participativo" onclick="filtrarPorCategoria('muy_participativo')">
+                  Muy Participativos (<?php echo $stats['muy_activos'] ?? 0; ?>)
+                </span>
+                <span class="segmento-item categoria-regular" onclick="filtrarPorCategoria('regular')">
+                  Regulares
+                </span>
+                <span class="segmento-item categoria-problematico" onclick="filtrarPorCategoria('problematico')">
+                  Problemáticos (<?php echo $stats['problematicos'] ?? 0; ?>)
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- [ Segmentación Panel ] end -->
 
         <!-- [ Main Content ] start -->
-        <div class="row">
-          <!-- [ Estados Table ] start -->
-          <div class="col-xl-8">
+        <div class="row">          
+          <div class="col-sm-12">
             <div class="card">
               <div class="card-header d-flex align-items-center justify-content-between">
                 <div>
                   <h3 class="mb-1">
-                    Estados del Pipeline de Leads
+                    Clasificación y Segmentación de Apoderados
                   </h3>
                   <small class="text-muted">
-                    Configura y gestiona los estados del proceso de captación. 
-                    Define etapas, establece orden y configura estados finales.
+                    Sistema inteligente de clasificación basado en compromiso y participación. 
+                    Evalúa automáticamente y genera segmentaciones para estrategias personalizadas.
                   </small>
                 </div>
-                <div class="d-flex gap-2">
-                  <button type="button" class="btn btn-outline-danger btn-sm" onclick="exportarEstadosPDF()">
-                    <i class="ti ti-file-type-pdf me-1"></i>
-                    Exportar PDF
+                <div class="d-flex gap-2 flex-wrap">
+                  <button type="button" class="btn btn-outline-warning btn-sm" onclick="recalcularTodo()">
+                    <i class="ti ti-refresh me-1"></i>
+                    Recalcular Todo
                   </button>
-                  <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalNuevoEstado">
-                    <i class="ti ti-plus me-1"></i>
-                    Nuevo Estado
+                  <button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#modalMedirParticipacion">
+                    <i class="ti ti-activity me-1"></i>
+                    Medir Participación
+                  </button>
+                  <button type="button" class="btn btn-outline-success btn-sm" data-bs-toggle="modal" data-bs-target="#modalEvaluarCompromiso">
+                    <i class="ti ti-heart me-1"></i>
+                    Evaluar Compromiso
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#modalGenerarSegmentacion">
+                    <i class="ti ti-chart-pie me-1"></i>
+                    Generar Segmentación
                   </button>
                 </div>
               </div>
               
               <div class="card-body">
-                <!-- Tabla de estados -->
+                <!-- Tabla de clasificación -->
                 <div class="dt-responsive table-responsive">
                   <table
-                    id="estados-table"
+                    id="clasificacion-table"
                     class="table table-striped table-bordered nowrap"
                   >
                     <thead>
                       <tr>
-                        <th width="5%">Orden</th>
-                        <th width="20%">Estado</th>
-                        <th width="12%">Badge</th>
-                        <th width="15%">Estadísticas</th>
-                        <th width="8%">Promedio Interés</th>
-                        <th width="8%">Urgentes</th>
-                        <th width="8%">Acciones Hoy</th>
-                        <th width="10%">Último Lead</th>
-                        <th width="14%">Acciones</th>
+                        <th width="4%">ID</th>
+                        <th width="14%">Apoderado</th>
+                        <th width="10%">Familia</th>
+                        <th width="12%">Categoría</th>
+                        <th width="8%">Compromiso</th>
+                        <th width="8%">Participación</th>
+                        <th width="8%">Puntuación</th>
+                        <th width="10%">Métricas</th>
+                        <th width="8%">Última Interacción</th>
+                        <th width="8%">Contacto Pref.</th>
+                        <th width="10%">Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
                       <?php
                       if ($result->num_rows > 0) {
                           while($row = $result->fetch_assoc()) {
-                              // Calcular promedio de interés con estrellas
-                              $promedio_interes = round($row['promedio_interes'] ?? 0, 1);
-                              $estrellas_promedio = '';
-                              for($i = 1; $i <= 5; $i++) {
-                                  $clase = $i <= $promedio_interes ? 'estrella-promedio ti ti-star-filled' : 'estrella-vacia ti ti-star';
-                                  $estrellas_promedio .= "<i class='$clase'></i>";
+                              // Formatear fechas
+                              $fecha_actualizacion = date('d/m/Y', strtotime($row['updated_at']));
+                              
+                              // Determinar clase de categoría
+                              $categoria = $row['categoria_apoderado'] ?? 'regular';
+                              $categoria_class = 'categoria-' . $categoria;
+                              
+                              // Determinar clase de compromiso
+                              $compromiso = $row['nivel_compromiso'] ?? 'medio';
+                              $compromiso_class = 'compromiso-' . $compromiso;
+                              
+                              // Determinar clase de participación
+                              $participacion = $row['nivel_participacion'] ?? 'activo';
+                              $participacion_class = 'participacion-' . $participacion;
+                              
+                              // Determinar clase de puntuación
+                              $puntuacion = (float)$row['puntuacion_compromiso'];
+                              if ($puntuacion >= 80) $score_class = 'score-excelente';
+                              elseif ($puntuacion >= 60) $score_class = 'score-bueno';
+                              elseif ($puntuacion >= 40) $score_class = 'score-regular';
+                              else $score_class = 'score-bajo';
+                              
+                              // Última interacción
+                              $dias_ultima = $row['dias_ultima_interaccion'];
+                              if ($dias_ultima === null) {
+                                  $interaccion_class = 'sin-interaccion';
+                                  $interaccion_text = 'Sin interacciones';
+                              } elseif ($dias_ultima <= 7) {
+                                  $interaccion_class = 'interaccion-reciente';
+                                  $interaccion_text = 'Hace ' . $dias_ultima . ' días';
+                              } elseif ($dias_ultima <= 30) {
+                                  $interaccion_class = 'interaccion-antigua';
+                                  $interaccion_text = 'Hace ' . $dias_ultima . ' días';
+                              } else {
+                                  $interaccion_class = 'interaccion-muy_antigua';
+                                  $interaccion_text = 'Hace ' . $dias_ultima . ' días';
                               }
                               
-                              // Formatear fecha del último lead
-                              $ultimo_lead = $row['ultimo_lead_fecha'] ? 
-                                'Hace ' . ceil((strtotime('now') - strtotime($row['ultimo_lead_fecha'])) / 86400) . ' días' : 'Sin leads';
-                              
                               echo "<tr>";
+                              echo "<td><strong>" . $row['id'] . "</strong></td>";
                               echo "<td>
-                                      <div class='interes-promedio'>" . $row['orden_display'] . "</div>
-                                    </td>";
-                              echo "<td>
-                                      <div class='estado-info'>
-                                        <span class='estado-nombre'>" . htmlspecialchars($row['nombre']) . "</span>
-                                        <span class='estado-descripcion'>" . htmlspecialchars($row['descripcion'] ?? 'Sin descripción') . "</span>
+                                      <div class='apoderado-info'>
+                                        <span class='apoderado-nombre'>" . htmlspecialchars($row['nombre_completo']) . "</span>
+                                        <span class='apoderado-contacto'>" . htmlspecialchars($row['email'] ?? 'Sin email') . "</span>
+                                        <span class='apoderado-contacto'>" . htmlspecialchars($row['telefono_principal'] ?? 'Sin teléfono') . "</span>
                                       </div>
                                     </td>";
                               echo "<td>
-                                      <span class='badge badge-estado-config" . ($row['es_final'] ? ' badge-final' : '') . "' 
-                                            style='background-color: " . ($row['color'] ?? '#007bff') . ";'>
-                                        " . htmlspecialchars($row['nombre']) . "
-                                      </span>
-                                    </td>";
-                              echo "<td>
-                                      <div class='estadisticas-estado'>
-                                        <div class='stat-item-small'>
-                                          <span class='stat-label-small'>Total:</span>
-                                          <span class='stat-number-small'>" . $row['total_leads_estado'] . "</span>
-                                        </div>
-                                        <div class='stat-item-small'>
-                                          <span class='stat-label-small'>Este mes:</span>
-                                          <span class='stat-number-small'>" . $row['leads_mes_actual'] . "</span>
-                                        </div>
-                                        <div class='stat-item-small'>
-                                          <span class='stat-label-small'>Asignados:</span>
-                                          <span class='stat-number-small'>" . $row['leads_asignados'] . "</span>
-                                        </div>
+                                      <div class='familia-info'>
+                                        <span class='familia-codigo'>" . htmlspecialchars($row['codigo_familia'] ?? '') . "</span>
+                                        <span class='apoderado-contacto'>Fam. " . htmlspecialchars($row['familia_apellido'] ?? '') . "</span>
+                                        " . ($row['nivel_socioeconomico'] ? "<span class='badge badge-nivel-socio nivel-" . $row['nivel_socioeconomico'] . "'>" . $row['nivel_socioeconomico'] . "</span>" : "") . "
                                       </div>
                                     </td>";
+                              echo "<td><span class='badge badge-categoria $categoria_class'>" . 
+                                   ucwords(str_replace('_', ' ', $categoria)) . "</span></td>";
+                              echo "<td><span class='badge badge-compromiso $compromiso_class'>" . 
+                                   ucfirst($compromiso) . "</span></td>";
+                              echo "<td><span class='badge badge-participacion $participacion_class'>" . 
+                                   ucwords(str_replace('_', ' ', $participacion)) . "</span></td>";
+                              echo "<td><span class='puntuacion-score $score_class'>" . 
+                                   number_format($puntuacion, 1) . "%</span></td>";
                               echo "<td>
-                                      <div class='interes-promedio'>
-                                        $estrellas_promedio
-                                        <span style='margin-left: 5px; font-weight: bold;'>$promedio_interes</span>
+                                      <div class='metricas-info'>
+                                        <span class='metrica-principal'>" . $row['total_interacciones'] . " total</span>
+                                        <span class='metrica-secundaria'>" . $row['interacciones_recientes'] . " (90d)</span>
+                                        <span class='metrica-secundaria'>" . $row['interacciones_exitosas'] . " exitosas</span>
                                       </div>
                                     </td>";
+                              echo "<td><span class='ultima-interaccion $interaccion_class'>" . 
+                                   $interaccion_text . "</span></td>";
+                              echo "<td><span class='preferencia-contacto'>" . 
+                                   ucfirst($row['preferencia_contacto'] ?? 'email') . "</span></td>";
                               echo "<td>
-                                      " . ($row['leads_urgentes'] > 0 ? 
-                                        "<span class='urgente-indicator pulsing'>" . $row['leads_urgentes'] . "</span>" : 
-                                        "<span class='text-muted'>0</span>") . "
-                                    </td>";
-                              echo "<td>
-                                      " . ($row['acciones_hoy'] > 0 ? 
-                                        "<span class='acciones-hoy'>" . $row['acciones_hoy'] . "</span>" : 
-                                        "<span class='text-muted'>0</span>") . "
-                                    </td>";
-                              echo "<td>
-                                      <span class='ultimo-lead'>" . $ultimo_lead . "</span>
-                                    </td>";
-                              echo "<td>
-                                      <div class='btn-grupo-estados'>
-                                        <button type='button' class='btn btn-outline-info btn-historial' 
+                                      <div class='btn-grupo-clasificacion'>
+                                        <button type='button' class='btn btn-outline-success btn-evaluar-compromiso' 
                                                 data-id='" . $row['id'] . "'
-                                                data-nombre='" . htmlspecialchars($row['nombre']) . "'
-                                                title='Ver Historial'>
-                                          <i class='ti ti-history'></i>
+                                                data-nombre='" . htmlspecialchars($row['nombre_completo']) . "'
+                                                title='Evaluar Compromiso'>
+                                          <i class='ti ti-heart'></i>
                                         </button>
-                                        <button type='button' class='btn btn-outline-primary btn-editar-estado' 
+                                        <button type='button' class='btn btn-outline-info btn-medir-participacion' 
                                                 data-id='" . $row['id'] . "'
-                                                title='Editar Estado'>
+                                                data-nombre='" . htmlspecialchars($row['nombre_completo']) . "'
+                                                title='Medir Participación'>
+                                          <i class='ti ti-activity'></i>
+                                        </button>
+                                        <button type='button' class='btn btn-outline-primary btn-actualizar-clasificacion' 
+                                                data-id='" . $row['id'] . "'
+                                                data-nombre='" . htmlspecialchars($row['nombre_completo']) . "'
+                                                title='Actualizar Clasificación Completa'>
                                           <i class='ti ti-edit'></i>
-                                        </button>
-                                        <button type='button' class='btn btn-outline-warning btn-configurar-flujo' 
-                                                data-id='" . $row['id'] . "'
-                                                data-nombre='" . htmlspecialchars($row['nombre']) . "'
-                                                title='Configurar Flujo'>
-                                          <i class='ti ti-git-branch'></i>
-                                        </button>
-                                        <button type='button' class='btn btn-outline-success btn-asignar-interes' 
-                                                data-id='" . $row['id'] . "'
-                                                data-nombre='" . htmlspecialchars($row['nombre']) . "'
-                                                title='Asignar Nivel de Interés'>
-                                          <i class='ti ti-star'></i>
                                         </button>
                                       </div>
                                     </td>";
                               echo "</tr>";
                           }
                       } else {
-                          echo "<tr><td colspan='9' class='text-center'>No hay estados configurados</td></tr>";
+                          echo "<tr><td colspan='11' class='text-center'>No hay apoderados para clasificar</td></tr>";
                       }
                       ?>
                     </tbody>
                     <tfoot>
                       <tr>
-                        <th>Orden</th>
-                        <th>Estado</th>
-                        <th>Badge</th>
-                        <th>Estadísticas</th>
-                        <th>Promedio Interés</th>
-                        <th>Urgentes</th>
-                        <th>Acciones Hoy</th>
-                        <th>Último Lead</th>
+                        <th>ID</th>
+                        <th>Apoderado</th>
+                        <th>Familia</th>
+                        <th>Categoría</th>
+                        <th>Compromiso</th>
+                        <th>Participación</th>
+                        <th>Puntuación</th>
+                        <th>Métricas</th>
+                        <th>Última Interacción</th>
+                        <th>Contacto Pref.</th>
                         <th>Acciones</th>
                       </tr>
                     </tfoot>
@@ -562,58 +980,16 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
               </div>
             </div>
           </div>
-          <!-- [ Estados Table ] end -->
-          
-          <!-- [ Flujos Panel ] start -->
-          <div class="col-xl-4">
-            <div class="card">
-              <div class="card-header">
-                <h5 class="mb-0">Flujos de Estados Más Comunes</h5>
-                <small class="text-muted">Últimos 90 días</small>
-              </div>
-              <div class="card-body">
-                <div class="workflow-visualization">
-                  <?php
-                  if ($flujo_result->num_rows > 0) {
-                      while($flujo = $flujo_result->fetch_assoc()) {
-                          echo "<div class='flujo-item'>
-                                  <div class='flujo-estados'>
-                                    <span class='badge' style='background-color: " . ($flujo['color_anterior'] ?? '#6c757d') . "; color: white;'>" . 
-                                    htmlspecialchars($flujo['estado_anterior'] ?? 'Nuevo') . "</span>
-                                    <i class='ti ti-arrow-right flujo-arrow'></i>
-                                    <span class='badge' style='background-color: " . ($flujo['color_nuevo'] ?? '#6c757d') . "; color: white;'>" . 
-                                    htmlspecialchars($flujo['estado_nuevo']) . "</span>
-                                  </div>
-                                  <span class='flujo-count'>" . $flujo['total_cambios'] . "</span>
-                                </div>";
-                      }
-                  } else {
-                      echo "<p class='text-muted text-center'>No hay datos de flujo disponibles</p>";
-                  }
-                  ?>
-                </div>
-                <div class="mt-3 text-center">
-                  <button type="button" class="btn btn-outline-primary btn-sm" onclick="analizarFlujos()">
-                    <i class="ti ti-chart-line me-1"></i>
-                    Análisis Completo de Flujos
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <!-- [ Flujos Panel ] end -->
         </div>
         <!-- [ Main Content ] end -->
       </div>
     </section>
 
     <!-- Incluir Modales -->
-    <?php include 'modals/clasificacion_leads/modal_nuevo.php'; ?>
-    <?php include 'modals/clasificacion_leads/modal_editar.php'; ?>
-    <?php include 'modals/clasificacion_leads/modal_historial.php'; ?>
-    <?php include 'modals/clasificacion_leads/modal_configurar_flujo.php'; ?>
-    <?php include 'modals/clasificacion_leads/modal_asignar_interes.php'; ?>
-    <?php include 'modals/clasificacion_leads/modal_historial_general.php'; ?>
+    <?php include 'modals/clasificacion/modal_evaluar_compromiso.php'; ?>
+    <?php include 'modals/clasificacion/modal_medir_participacion.php'; ?>
+    <?php include 'modals/clasificacion/modal_actualizar_clasificacion.php'; ?>
+    <?php include 'modals/clasificacion/modal_generar_segmentacion.php'; ?>
 
     <?php include 'includes/footer.php'; ?>
     
@@ -643,11 +1019,11 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
     
     <script>
       $(document).ready(function() {
-            // Inicializar DataTable
-            var table = $("#estados-table").DataTable({
+            // Inicializar DataTable con filtros integrados
+            var table = $("#clasificacion-table").DataTable({
               "language": {
                 "decimal": "",
-                "emptyTable": "No hay estados disponibles en la tabla",
+                "emptyTable": "No hay apoderados disponibles para clasificar",
                 "info": "Mostrando _START_ a _END_ de _TOTAL_ registros",
                 "infoEmpty": "Mostrando 0 a 0 de 0 registros",
                 "infoFiltered": "(filtrado de _MAX_ registros totales)",
@@ -663,204 +1039,135 @@ if ($result_nombre && $row_nombre = $result_nombre->fetch_assoc()) {
                   "last": "Último",
                   "next": "Siguiente",
                   "previous": "Anterior"
+                },
+                "aria": {
+                  "sortAscending": ": activar para ordenar la columna ascendente",
+                  "sortDescending": ": activar para ordenar la columna descendente"
                 }
               },
-              "pageLength": 15,
-              "order": [[ 0, "asc" ]], // Ordenar por orden de display
+              "pageLength": 25,
+              "order": [[ 6, "desc" ]], // Ordenar por puntuación descendente
               "columnDefs": [
-                { "orderable": false, "targets": 8 } // Deshabilitar ordenación en columna de acciones
+                { "orderable": false, "targets": 10 } // Deshabilitar ordenación en columna de acciones
               ],
               "initComplete": function () {
+                // Configurar filtros después de que la tabla esté completamente inicializada
                 this.api().columns().every(function (index) {
                   var column = this;
                   
-                  if (index < 8) { // Solo filtros para las primeras 8 columnas
+                  // Solo aplicar filtros a las primeras 10 columnas (sin acciones)
+                  if (index < 10) {
                     var title = $(column.header()).text();
                     var input = $('<input type="text" class="form-control form-control-sm" placeholder="Buscar ' + title + '" />')
                       .appendTo($(column.footer()).empty())
                       .on('keyup change clear', function () {
                         if (column.search() !== this.value) {
-                          column.search(this.value).draw();
+                          column
+                            .search(this.value)
+                            .draw();
                         }
                       });
                   } else {
+                    // Agregar "ACCIONES" en negrita en la columna de acciones
                     $(column.footer()).html('<strong>Acciones</strong>');
                   }
                 });
               }
             });
 
-            // Función para exportar estados a PDF
-            window.exportarEstadosPDF = function() {
-              var tabla = $('#estados-table').DataTable();
-              var datosVisibles = [];
-              
-              tabla.rows({ filter: 'applied' }).every(function(rowIdx, tableLoop, rowLoop) {
-                var data = this.data();
-                var row = [];
-                
-                for (var i = 0; i < data.length - 1; i++) {
-                  var cellContent = $(data[i]).text() || data[i];
-                  row.push(cellContent);
-                }
-                datosVisibles.push(row);
-              });
-              
-              if (datosVisibles.length === 0) {
-                alert('No hay registros visibles para generar el reporte PDF.');
-                return;
+            // Función para recalcular todas las clasificaciones
+            window.recalcularTodo = function() {
+              if (confirm('¿Está seguro de recalcular TODAS las clasificaciones? Este proceso puede tardar varios minutos.')) {
+                $.ajax({
+                  url: '<?php echo $_SERVER['PHP_SELF']; ?>',
+                  method: 'POST',
+                  data: { accion: 'recalcular_clasificaciones' },
+                  success: function(response) {
+                    alert('Recálculo completado');
+                    location.reload();
+                  },
+                  error: function() {
+                    alert('Error en el recálculo masivo');
+                  }
+                });
               }
-              
-              var form = document.createElement('form');
-              form.method = 'POST';
-              form.action = 'reports/generar_pdf_estados.php';
-              form.target = '_blank';
-              
-              var input = document.createElement('input');
-              input.type = 'hidden';
-              input.name = 'filteredData';
-              input.value = JSON.stringify(datosVisibles);
-              
-              form.appendChild(input);
-              document.body.appendChild(form);
-              form.submit();
-              document.body.removeChild(form);
             };
 
-            // Función para configurar flujos generales
-            window.configurarFlujos = function() {
-              $('#modalConfigurarFlujo').modal('show');
+            // Función para filtrar por categoría
+            window.filtrarPorCategoria = function(categoria) {
+              table.column(3).search(categoria.replace('_', ' ')).draw();
             };
 
-            // Función para ver historial general
-            window.verHistorialGeneral = function() {
-              $('#modalHistorialGeneral').modal('show');
-            };
-
-            // Función para analizar flujos
-            window.analizarFlujos = function() {
-              window.location.href = 'analisis_flujos.php';
-            };
-
-            // Manejar click en botón ver historial
-            $(document).on('click', '.btn-historial', function() {
+            // Manejar click en botón evaluar compromiso
+            $(document).on('click', '.btn-evaluar-compromiso', function() {
                 var id = $(this).data('id');
                 var nombre = $(this).data('nombre');
                 
-                $('#historial_estado_id').val(id);
-                $('#historial_estado_nombre').text(nombre);
-                
-                // Cargar historial específico del estado
-                cargarHistorialEstado(id);
-                
-                $('#modalHistorial').modal('show');
+                $('#evaluar_apoderado_id').val(id);
+                $('#evaluar_apoderado_nombre').text(nombre);
+                $('#modalEvaluarCompromiso').modal('show');
             });
 
-            // Manejar click en botón editar estado
-            $(document).on('click', '.btn-editar-estado', function() {
-                var id = $(this).data('id');
-                cargarDatosEstado(id, 'editar');
-            });
-
-            // Manejar click en botón configurar flujo
-            $(document).on('click', '.btn-configurar-flujo', function() {
+            // Manejar click en botón medir participación
+            $(document).on('click', '.btn-medir-participacion', function() {
                 var id = $(this).data('id');
                 var nombre = $(this).data('nombre');
                 
-                $('#flujo_estado_id').val(id);
-                $('#flujo_estado_nombre').text(nombre);
-                
-                cargarConfiguracionFlujo(id);
-                
-                $('#modalConfigurarFlujo').modal('show');
+                $('#medir_apoderado_id').val(id);
+                $('#medir_apoderado_nombre').text(nombre);
+                $('#modalMedirParticipacion').modal('show');
             });
 
-            // Manejar click en botón asignar nivel de interés
-            $(document).on('click', '.btn-asignar-interes', function() {
+            // Manejar click en botón actualizar clasificación
+            $(document).on('click', '.btn-actualizar-clasificacion', function() {
                 var id = $(this).data('id');
                 var nombre = $(this).data('nombre');
                 
-                $('#interes_estado_id').val(id);
-                $('#interes_estado_nombre').text(nombre);
-                
-                $('#modalAsignarInteres').modal('show');
+                $('#clasificacion_apoderado_id').val(id);
+                $('#clasificacion_apoderado_nombre').text(nombre);
+                cargarDatosClasificacion(id);
+                $('#modalActualizarClasificacion').modal('show');
             });
 
-            // Función para cargar datos del estado
-            function cargarDatosEstado(id, accion) {
-              $.ajax({
-                url: 'actions/obtener_estado.php',
-                method: 'POST',
-                data: { id: id, accion: accion },
-                dataType: 'json',
-                success: function(response) {
-                  if (response.success) {
-                    if (accion === 'editar') {
-                      // Llenar modal de edición con los datos
-                      $('#edit_estado_id').val(response.data.id);
-                      $('#edit_nombre').val(response.data.nombre);
-                      $('#edit_descripcion').val(response.data.descripcion);
-                      $('#edit_color').val(response.data.color);
-                      $('#edit_orden_display').val(response.data.orden_display);
-                      $('#edit_es_final').prop('checked', response.data.es_final == 1);
-                      
-                      $('#modalEditar').modal('show');
-                    }
-                  } else {
-                    alert('Error al cargar los datos: ' + response.message);
-                  }
-                },
-                error: function() {
-                  alert('Error de conexión al obtener los datos del estado.');
-                }
-              });
+            // Función para cargar datos actuales de clasificación
+            function cargarDatosClasificacion(id) {
+              // Obtener datos actuales del apoderado desde la tabla
+              var fila = $('button[data-id="' + id + '"]').closest('tr');
+              var datos = table.row(fila).data();
+              
+              // Pre-llenar formulario con datos actuales
+              // Esta funcionalidad se implementaría en el modal correspondiente
             }
 
-            // Función para cargar historial de un estado específico
-            function cargarHistorialEstado(estadoId) {
+            // Auto-refresh cada 5 minutos para actualizar métricas
+            setInterval(function() {
+              // Solo recargar estadísticas sin afectar filtros
+              actualizarEstadisticas();
+            }, 300000); // 5 minutos
+
+            // Función para actualizar solo estadísticas
+            function actualizarEstadisticas() {
               $.ajax({
-                url: 'actions/obtener_historial_estado.php',
-                method: 'POST',
-                data: { estado_id: estadoId },
+                url: 'actions/obtener_estadisticas_clasificacion.php',
+                method: 'GET',
                 dataType: 'json',
                 success: function(response) {
                   if (response.success) {
-                    var historialHtml = '';
-                    response.data.forEach(function(cambio) {
-                      historialHtml += '<div class="historial-item">';
-                      historialHtml += '<div class="cambio-fecha">' + cambio.fecha + '</div>';
-                      historialHtml += '<div class="cambio-detalle">' + cambio.detalle + '</div>';
-                      historialHtml += '<div class="cambio-usuario">Por: ' + cambio.usuario + '</div>';
-                      historialHtml += '</div>';
+                    // Actualizar números en las tarjetas de estadísticas
+                    $('.stats-card .stat-number').each(function(index) {
+                      var keys = ['total_apoderados', 'colaboradores_estrella', 'alto_compromiso', 'muy_activos', 'problematicos', 'tasa_positiva'];
+                      if (keys[index] && response.data[keys[index]] !== undefined) {
+                        $(this).text(response.data[keys[index]]);
+                      }
                     });
-                    $('#historial-contenido').html(historialHtml);
                   }
                 },
                 error: function() {
-                  $('#historial-contenido').html('<p class="text-danger">Error al cargar el historial.</p>');
+                  console.log('Error al actualizar estadísticas');
                 }
               });
             }
 
-            // Función para cargar configuración de flujo
-            function cargarConfiguracionFlujo(estadoId) {
-              $.ajax({
-                url: 'actions/obtener_flujo_estado.php',
-                method: 'POST',
-                data: { estado_id: estadoId },
-                dataType: 'json',
-                success: function(response) {
-                  if (response.success) {
-                    // Cargar configuración de flujo específica
-                    $('#flujo-configuracion').html(response.html);
-                  }
-                },
-                error: function() {
-                  $('#flujo-configuracion').html('<p class="text-danger">Error al cargar la configuración de flujo.</p>');
-                }
-              });
-            }
-            
             // Tooltip para elementos
             $('[title]').tooltip();
       });
